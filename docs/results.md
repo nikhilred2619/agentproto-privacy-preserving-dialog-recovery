@@ -7,9 +7,10 @@ raw data: `results/*.json`, `results/*.csv`.
 
 ## Test suite
 
-`pytest`: **181 passed** in about 11 s. Re-run three more times with the same
-result (no flaky tests observed). Test counts per file are visible with
-`pytest -v`.
+`pytest`: **181 passed** in about 11 s on Python 3.13. Repeated four more
+times on 3.13 (including twice from a fresh clone in a new virtualenv) and
+once each on Python 3.11 and 3.12, all with the same result. No flaky tests
+were observed. Test counts per file are visible with `pytest -v`.
 
 ## E1 Scenario matrix
 
