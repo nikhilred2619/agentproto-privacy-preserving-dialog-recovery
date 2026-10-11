@@ -46,9 +46,17 @@ what is asserted.
 ## Test suite
 
 `pytest`: **189 passed** (181 from v0.1.0, 6 audit regression cases, 2 new
-privacy checks for the ticket binding). Results of runs on other Python
-versions are in the "Quality checks" section of the final report in
-`CHANGELOG.md`.
+privacy checks for the ticket binding).
+
+Verification runs on 2026-10-11, all with the same result:
+
+* 5 consecutive full runs on Python 3.13: 189 passed each time.
+* From a fresh clone in new virtualenvs: 189 passed on Python 3.11, 3.12
+  and 3.13; `tests/test_audit_regressions.py` alone: 6 passed.
+* The threaded tests (`test_audit_regressions.py`, `test_concurrency.py`)
+  run 20 more times: green every time. No flaky test observed.
+* The README experiment commands (reduced sizes) completed from the fresh
+  clone.
 
 ## E1 Scenario matrix
 
