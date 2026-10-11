@@ -1,0 +1,7 @@
+mode,dialogs,resumptions_per_dialog,mean_distinct_A_B_shared_values_per_dialog,domains,mean_domains_sharing_one_value,max_domains_sharing_one_value,identifier_join_fraction_by_domain_pair,gateway_can_link_upstream_downstream,endpoint_A_B_identifier_join,order_based_A_B_join_accuracy_sequential_workload
+global-store,50,1,1,"[""A"", ""B"", ""GW1""]",3,3,"{""A~B"": 1.0, ""A~GW1"": 1.0, ""B~GW1"": 1.0}","{""GW1"": 1.0}",1.0,1.0
+global-endpoint,50,1,1,"[""A"", ""B"", ""GW1"", ""GW2""]",4,4,"{""A~B"": 1.0, ""A~GW1"": 1.0, ""A~GW2"": 1.0, ""B~GW1"": 1.0, ""B~GW2"": 1.0, ""GW1~GW2"": 1.0}","{""GW1"": 1.0, ""GW2"": 1.0}",1.0,1.0
+scoped-store,50,1,0,"[""A"", ""B"", ""GW1""]",2,2,"{""A~B"": 0.0, ""A~GW1"": 1.0, ""B~GW1"": 1.0}","{""GW1"": 1.0}",0.0,1.0
+scoped-endpoint-noticket,50,1,0,"[""A"", ""B"", ""GW1"", ""GW2""]",3,3,"{""A~B"": 0.0, ""A~GW1"": 1.0, ""A~GW2"": 1.0, ""B~GW1"": 1.0, ""B~GW2"": 0.0, ""GW1~GW2"": 1.0}","{""GW1"": 1.0, ""GW2"": 0.0}",0.0,1.0
+scoped-endpoint-ticket,50,1,2,"[""A"", ""B"", ""GW1"", ""GW2""]",4,4,"{""A~B"": 1.0, ""A~GW1"": 1.0, ""A~GW2"": 1.0, ""B~GW1"": 1.0, ""B~GW2"": 1.0, ""GW1~GW2"": 1.0}","{""GW1"": 1.0, ""GW2"": 1.0}",1.0,1.0
+scoped-endpoint-medticket,50,1,0,"[""A"", ""B"", ""GW1"", ""GW2""]",3,3,"{""A~B"": 0.0, ""A~GW1"": 1.0, ""A~GW2"": 1.0, ""B~GW1"": 1.0, ""B~GW2"": 1.0, ""GW1~GW2"": 1.0}","{""GW1"": 1.0, ""GW2"": 1.0}",0.0,1.0

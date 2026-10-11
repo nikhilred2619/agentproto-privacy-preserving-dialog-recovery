@@ -1,0 +1,23 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[test]"
+      - run: pytest
+      - name: Smoke-run experiments (small)
+        run: >
+          agentproto-recovery all --out ci-results --repeats 1 --fault-dialogs 30
+          --seeds 1 --privacy-dialogs 10 --bench-dialogs 40 --runs 1

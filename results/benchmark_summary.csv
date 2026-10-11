@@ -1,0 +1,6 @@
+mode,runs,dialogs_per_run,threads,establish_median_ms,establish_p95_ms,lookup_median_ms,lookup_p95_ms,recovery_mean_ms,recovery_median_ms,recovery_p95_ms,recovery_samples_per_run,concurrent_throughput_per_s_median,incorrect_associations_total,non_ok_recoveries_total,gw1_store_bytes,gw1_store_rows,baseline,recovery_median_ratio_vs_baseline,establish_median_ratio_vs_baseline
+global-store,5,400,4,2.5296,4.1448,0.0375,0.1007,2.7172,2.5481,3.8839,200,485.14,0,0,131072,400,,,
+global-endpoint,5,400,4,2.3152,3.604,0.0663,0.117,1.9483,1.8245,3.389,200,719.66,0,0,98304,400,,,
+scoped-store,5,400,4,2.4022,3.4393,0.0542,0.1004,2.5078,2.3014,4.1098,200,568.92,0,0,126976,400,global-store,0.903,0.95
+scoped-endpoint-ticket,5,400,4,2.4677,3.8772,0.0428,0.084,2.4017,2.1281,4.0815,200,732.7,0,0,98304,400,global-endpoint,1.166,1.066
+scoped-endpoint-medticket,5,400,4,2.4102,4.0412,0.0371,0.0707,2.4685,2.1538,4.0539,200,774.8,0,0,98304,400,global-endpoint,1.18,1.041

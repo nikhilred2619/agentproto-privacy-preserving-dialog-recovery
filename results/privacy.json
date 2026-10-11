@@ -1,0 +1,160 @@
+{
+  "global-endpoint": {
+    "dialogs": 50,
+    "domains": [
+      "A",
+      "B",
+      "GW1",
+      "GW2"
+    ],
+    "endpoint_A_B_identifier_join": 1.0,
+    "gateway_can_link_upstream_downstream": {
+      "GW1": 1.0,
+      "GW2": 1.0
+    },
+    "identifier_join_fraction_by_domain_pair": {
+      "A~B": 1.0,
+      "A~GW1": 1.0,
+      "A~GW2": 1.0,
+      "B~GW1": 1.0,
+      "B~GW2": 1.0,
+      "GW1~GW2": 1.0
+    },
+    "max_domains_sharing_one_value": 4,
+    "mean_distinct_A_B_shared_values_per_dialog": 1,
+    "mean_domains_sharing_one_value": 4,
+    "mode": "global-endpoint",
+    "order_based_A_B_join_accuracy_sequential_workload": 1.0,
+    "resumptions_per_dialog": 1
+  },
+  "global-store": {
+    "dialogs": 50,
+    "domains": [
+      "A",
+      "B",
+      "GW1"
+    ],
+    "endpoint_A_B_identifier_join": 1.0,
+    "gateway_can_link_upstream_downstream": {
+      "GW1": 1.0
+    },
+    "identifier_join_fraction_by_domain_pair": {
+      "A~B": 1.0,
+      "A~GW1": 1.0,
+      "B~GW1": 1.0
+    },
+    "max_domains_sharing_one_value": 3,
+    "mean_distinct_A_B_shared_values_per_dialog": 1,
+    "mean_domains_sharing_one_value": 3,
+    "mode": "global-store",
+    "order_based_A_B_join_accuracy_sequential_workload": 1.0,
+    "resumptions_per_dialog": 1
+  },
+  "scoped-endpoint-medticket": {
+    "dialogs": 50,
+    "domains": [
+      "A",
+      "B",
+      "GW1",
+      "GW2"
+    ],
+    "endpoint_A_B_identifier_join": 0.0,
+    "gateway_can_link_upstream_downstream": {
+      "GW1": 1.0,
+      "GW2": 1.0
+    },
+    "identifier_join_fraction_by_domain_pair": {
+      "A~B": 0.0,
+      "A~GW1": 1.0,
+      "A~GW2": 1.0,
+      "B~GW1": 1.0,
+      "B~GW2": 1.0,
+      "GW1~GW2": 1.0
+    },
+    "max_domains_sharing_one_value": 3,
+    "mean_distinct_A_B_shared_values_per_dialog": 0,
+    "mean_domains_sharing_one_value": 3,
+    "mode": "scoped-endpoint-medticket",
+    "order_based_A_B_join_accuracy_sequential_workload": 1.0,
+    "resumptions_per_dialog": 1
+  },
+  "scoped-endpoint-noticket": {
+    "dialogs": 50,
+    "domains": [
+      "A",
+      "B",
+      "GW1",
+      "GW2"
+    ],
+    "endpoint_A_B_identifier_join": 0.0,
+    "gateway_can_link_upstream_downstream": {
+      "GW1": 1.0,
+      "GW2": 0.0
+    },
+    "identifier_join_fraction_by_domain_pair": {
+      "A~B": 0.0,
+      "A~GW1": 1.0,
+      "A~GW2": 1.0,
+      "B~GW1": 1.0,
+      "B~GW2": 0.0,
+      "GW1~GW2": 1.0
+    },
+    "max_domains_sharing_one_value": 3,
+    "mean_distinct_A_B_shared_values_per_dialog": 0,
+    "mean_domains_sharing_one_value": 3,
+    "mode": "scoped-endpoint-noticket",
+    "order_based_A_B_join_accuracy_sequential_workload": 1.0,
+    "resumptions_per_dialog": 1
+  },
+  "scoped-endpoint-ticket": {
+    "dialogs": 50,
+    "domains": [
+      "A",
+      "B",
+      "GW1",
+      "GW2"
+    ],
+    "endpoint_A_B_identifier_join": 1.0,
+    "gateway_can_link_upstream_downstream": {
+      "GW1": 1.0,
+      "GW2": 1.0
+    },
+    "identifier_join_fraction_by_domain_pair": {
+      "A~B": 1.0,
+      "A~GW1": 1.0,
+      "A~GW2": 1.0,
+      "B~GW1": 1.0,
+      "B~GW2": 1.0,
+      "GW1~GW2": 1.0
+    },
+    "max_domains_sharing_one_value": 4,
+    "mean_distinct_A_B_shared_values_per_dialog": 2,
+    "mean_domains_sharing_one_value": 4,
+    "mode": "scoped-endpoint-ticket",
+    "order_based_A_B_join_accuracy_sequential_workload": 1.0,
+    "resumptions_per_dialog": 1
+  },
+  "scoped-store": {
+    "dialogs": 50,
+    "domains": [
+      "A",
+      "B",
+      "GW1"
+    ],
+    "endpoint_A_B_identifier_join": 0.0,
+    "gateway_can_link_upstream_downstream": {
+      "GW1": 1.0
+    },
+    "identifier_join_fraction_by_domain_pair": {
+      "A~B": 0.0,
+      "A~GW1": 1.0,
+      "B~GW1": 1.0
+    },
+    "max_domains_sharing_one_value": 2,
+    "mean_distinct_A_B_shared_values_per_dialog": 0,
+    "mean_domains_sharing_one_value": 2,
+    "mode": "scoped-store",
+    "order_based_A_B_join_accuracy_sequential_workload": 1.0,
+    "resumptions_per_dialog": 1
+  }
+}

@@ -1,0 +1,391 @@
+"""Agent A (Domain A, initiator) and Agent B (Domain B, delegated receiver).
+
+Each agent owns a private SQLite file. Agent B is authoritative for its
+own dialog lifecycle and epoch and enforces principal binding, termination,
+freshness and authorization independently of any gateway.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from .authorization import AuthorizationService, Decision
+from .diagnostics import EventEmitter, ObservationLog
+from .errors import AuthzUnavailable, Code, RecoveryError
+from .failure_injection import FailureInjector
+from .lifecycle import State
+from .messages import AuthContext, OpResult, ResumeResult
+from .persistence import Database
+from .security import Redactor, TicketInvalid, TicketSealer, new_identifier, new_key
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .gateways import Gateway
+
+AUTHZ_CODES = {
+    Decision.DENIED: Code.AUTHZ_DENIED,
+    Decision.EXPIRED: Code.AUTHZ_EXPIRED,
+    Decision.REVOKED: Code.AUTHZ_REVOKED,
+}
+
+
+def require_authz(authz: AuthorizationService, ctx: AuthContext, action: str) -> None:
+    try:
+        d = authz.check(ctx.principal, ctx.tenant, action)
+    except AuthzUnavailable as e:
+        raise RecoveryError(Code.AUTHZ_UNAVAILABLE) from e
+    if d is not Decision.ALLOW:
+        raise RecoveryError(AUTHZ_CODES[d], action)
+
+
+# --------------------------------------------------------------------------
+# Agent B
+# --------------------------------------------------------------------------
+
+B_SCHEMA = """
+CREATE TABLE IF NOT EXISTS dialogs (
+    dialog_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, principal TEXT NOT NULL,
+    state TEXT NOT NULL, epoch INTEGER NOT NULL, task TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS ops (
+    dialog_id TEXT NOT NULL, seq INTEGER NOT NULL, state TEXT NOT NULL,
+    result TEXT, PRIMARY KEY (dialog_id, seq));
+CREATE TABLE IF NOT EXISTS resume_log (
+    dialog_id TEXT NOT NULL, from_epoch INTEGER NOT NULL, new_epoch INTEGER NOT NULL,
+    ticket TEXT, mediator TEXT, PRIMARY KEY (dialog_id, from_epoch));
+"""
+
+TOOL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS executions (
+    n INTEGER PRIMARY KEY AUTOINCREMENT, op_key TEXT NOT NULL, payload TEXT);
+"""
+
+
+class ExternalTool:
+    """A downstream system with a real side effect. It is deliberately NOT
+    idempotent: every execute() appends a row, so duplicates are visible.
+    It supports lookup by the caller's operation key for reconciliation."""
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def execute(self, op_key: str, payload: str) -> str:
+        with self.db.tx() as c:
+            c.execute("INSERT INTO executions (op_key, payload) VALUES (?,?)", (op_key, payload))
+        return f"done:{payload}"
+
+    def lookup(self, op_key: str) -> str | None:
+        rows = self.db.query("SELECT payload FROM executions WHERE op_key=?", (op_key,))
+        return f"done:{rows[0]['payload']}" if rows else None
+
+    def executions(self, op_key: str | None = None) -> int:
+        if op_key is None:
+            return self.db.query("SELECT COUNT(*) AS n FROM executions")[0]["n"]
+        return self.db.query("SELECT COUNT(*) AS n FROM executions WHERE op_key=?",
+                             (op_key,))[0]["n"]
+
+
+@dataclass
+class BDialog:
+    dialog_id: str
+    tenant: str
+    principal: str
+    state: str
+    epoch: int
+
+
+class AgentB:
+    DOMAIN = "B"
+
+    def __init__(self, workdir: Path, authz: AuthorizationService, injector: FailureInjector,
+                 obs: ObservationLog, use_tickets: bool, name: str = "agent-b") -> None:
+        self.name = name
+        self.authz = authz
+        self.injector = injector
+        self.obs = obs
+        self.use_tickets = use_tickets
+        self.db = Database(Path(workdir) / "domain_b.sqlite", "b", injector, B_SCHEMA)
+        self.tool = ExternalTool(Database(Path(workdir) / "domain_b_tool.sqlite", "b_tool",
+                                          injector, TOOL_SCHEMA))
+        self.sealer = TicketSealer(new_key(), aad_context=name)
+        self.events = EventEmitter("agent_b", self.DOMAIN, Redactor(new_key()))
+        # Evaluation oracle only (never sent to other domains).
+        self.oracle_resumed: list[str] = []
+        self.oracle_established: list[str] = []
+
+    # -- helpers -----------------------------------------------------------
+    def _row(self, dialog_id: str) -> BDialog | None:
+        rows = self.db.query("SELECT * FROM dialogs WHERE dialog_id=?", (dialog_id,))
+        if not rows:
+            return None
+        r = rows[0]
+        return BDialog(r["dialog_id"], r["tenant"], r["principal"], r["state"], r["epoch"])
+
+    def _seal(self, d: BDialog, epoch: int) -> str | None:
+        if not self.use_tickets:
+            return None
+        t = self.sealer.seal({"d": d.dialog_id, "t": d.tenant, "p": d.principal, "e": epoch})
+        self.obs.saw(self.DOMAIN, "ticket", t)  # a domain observes what it emits
+        return t
+
+    def _resolve(self, ctx: AuthContext, ref: str | None, ticket: str | None
+                 ) -> tuple[BDialog, int | None]:
+        ticket_epoch = None
+        if ref is None:
+            if ticket is None:
+                raise RecoveryError(Code.MAPPING_NOT_FOUND, "no reference")
+            self.obs.saw(self.DOMAIN, "ticket", ticket)
+            try:
+                tp = self.sealer.open(ticket)
+            except TicketInvalid as e:
+                raise RecoveryError(Code.TICKET_INVALID, str(e)) from e
+            ref, ticket_epoch = tp["d"], tp["e"]
+            if tp["t"] != ctx.tenant:
+                raise RecoveryError(Code.TENANT_MISMATCH, "ticket")
+            if tp["p"] != ctx.principal:
+                raise RecoveryError(Code.PRINCIPAL_MISMATCH, "ticket")
+        self.obs.saw(self.DOMAIN, "dialog_id", ref)
+        d = self._row(ref)
+        if d is None:
+            raise RecoveryError(Code.DIALOG_NOT_FOUND)
+        if d.tenant != ctx.tenant:
+            raise RecoveryError(Code.TENANT_MISMATCH)
+        if d.principal != ctx.principal:
+            raise RecoveryError(Code.PRINCIPAL_MISMATCH)
+        return d, ticket_epoch
+
+    # -- protocol operations -------------------------------------------------
+    def establish(self, ctx: AuthContext, task: str, global_id: str | None = None
+                  ) -> tuple[str, str | None]:
+        require_authz(self.authz, ctx, "delegate")
+        dialog_id = global_id or new_identifier("db")
+        self.obs.saw(self.DOMAIN, "dialog_id", dialog_id)
+        try:
+            with self.db.tx() as c:
+                c.execute("INSERT INTO dialogs VALUES (?,?,?,?,?,?)",
+                          (dialog_id, ctx.tenant, ctx.principal, State.ACTIVE.value, 0, task))
+        except sqlite3.IntegrityError as e:
+            # Only reachable with caller-supplied (global) identifiers.
+            raise RecoveryError(Code.INVALID_STATE, "dialog identifier already in use") from e
+        self.oracle_established.append(dialog_id)
+        d = BDialog(dialog_id, ctx.tenant, ctx.principal, State.ACTIVE.value, 0)
+        self.events.emit("dialog_established", ids={"dialog": dialog_id})
+        return dialog_id, self._seal(d, 0)
+
+    def resume(self, ctx: AuthContext, expected_epoch: int, ref: str | None = None,
+               ticket: str | None = None, mediator: str = "") -> tuple[str, ResumeResult]:
+        d, ticket_epoch = self._resolve(ctx, ref, ticket)
+        if d.state == State.TERMINATED.value:
+            raise RecoveryError(Code.DIALOG_TERMINATED)
+        require_authz(self.authz, ctx, "resume")
+        if ticket_epoch is not None and ticket_epoch != expected_epoch:
+            raise RecoveryError(Code.STALE_REFERENCE, "ticket epoch")
+        with self.db.tx() as c:
+            cur = c.execute("SELECT epoch, state FROM dialogs WHERE dialog_id=?",
+                            (d.dialog_id,)).fetchone()
+            if cur["state"] == State.TERMINATED.value:
+                raise RecoveryError(Code.DIALOG_TERMINATED)
+            if cur["epoch"] == expected_epoch:
+                new_epoch = expected_epoch + 1
+                tkt = self._seal(d, new_epoch)
+                c.execute("UPDATE dialogs SET epoch=?, state=? WHERE dialog_id=?",
+                          (new_epoch, State.ACTIVE.value, d.dialog_id))
+                c.execute("INSERT INTO resume_log VALUES (?,?,?,?,?)",
+                          (d.dialog_id, expected_epoch, new_epoch, tkt, mediator))
+                replay = False
+            elif cur["epoch"] == expected_epoch + 1:
+                # Idempotent retry of the most recent transition only.
+                row = c.execute("SELECT new_epoch, ticket FROM resume_log WHERE dialog_id=? "
+                                "AND from_epoch=?", (d.dialog_id, expected_epoch)).fetchone()
+                if row is None:
+                    raise RecoveryError(Code.STALE_REFERENCE)
+                new_epoch, tkt, replay = row["new_epoch"], row["ticket"], True
+            else:
+                raise RecoveryError(Code.STALE_REFERENCE,
+                                    f"expected {expected_epoch}, at {cur['epoch']}")
+        self.oracle_resumed.append(d.dialog_id)
+        self.events.emit("dialog_resumed", ids={"dialog": d.dialog_id},
+                         epoch=new_epoch, idempotent_replay=replay)
+        return d.dialog_id, ResumeResult(Code.OK, new_epoch, tkt)
+
+    def invoke(self, ctx: AuthContext, ref: str, seq: int, payload: str) -> OpResult:
+        d, _ = self._resolve(ctx, ref, None)
+        if d.state == State.TERMINATED.value:
+            raise RecoveryError(Code.DIALOG_TERMINATED)
+        require_authz(self.authz, ctx, "invoke")
+        with self.db.tx() as c:
+            row = c.execute("SELECT state, result FROM ops WHERE dialog_id=? AND seq=?",
+                            (d.dialog_id, seq)).fetchone()
+            if row is not None:
+                if row["state"] == "COMMITTED":
+                    return OpResult(Code.OK, "COMMITTED", row["result"], "deduplicated")
+                return OpResult(Code.OUTCOME_UNKNOWN, "PENDING", None,
+                                "prior attempt did not record an outcome; reconcile")
+            # Write-ahead intent, committed BEFORE the side effect.
+            c.execute("INSERT INTO ops VALUES (?,?,?,NULL)", (d.dialog_id, seq, "PENDING"))
+        op_key = f"{d.dialog_id}:{seq}"
+        result = self.tool.execute(op_key, payload)
+        self.injector.check("b.after_tool_before_commit")
+        with self.db.tx() as c:
+            c.execute("UPDATE ops SET state='COMMITTED', result=? WHERE dialog_id=? AND seq=?",
+                      (result, d.dialog_id, seq))
+        self.injector.check("b.after_commit_before_ack")
+        return OpResult(Code.OK, "COMMITTED", result)
+
+    def op_status(self, ctx: AuthContext, ref: str, seq: int) -> OpResult:
+        d, _ = self._resolve(ctx, ref, None)
+        rows = self.db.query("SELECT state, result FROM ops WHERE dialog_id=? AND seq=?",
+                             (d.dialog_id, seq))
+        if not rows:
+            return OpResult(Code.OK, "NOT_FOUND")
+        r = rows[0]
+        if r["state"] == "COMMITTED":
+            return OpResult(Code.OK, "COMMITTED", r["result"])
+        return OpResult(Code.OUTCOME_UNKNOWN, "PENDING")
+
+    def reconcile(self, dialog_id: str, seq: int) -> str:
+        """Local operator action in Domain B: ask the external system what
+        actually happened instead of re-executing."""
+        result = self.tool.lookup(f"{dialog_id}:{seq}")
+        with self.db.tx() as c:
+            if result is None:
+                c.execute("DELETE FROM ops WHERE dialog_id=? AND seq=? AND state='PENDING'",
+                          (dialog_id, seq))
+                return "NOT_EXECUTED"
+            c.execute("UPDATE ops SET state='COMMITTED', result=? WHERE dialog_id=? AND seq=?",
+                      (result, dialog_id, seq))
+        return "COMMITTED"
+
+    def terminate(self, ctx: AuthContext, ref: str) -> None:
+        d, _ = self._resolve(ctx, ref, None)
+        with self.db.tx() as c:
+            c.execute("UPDATE dialogs SET state=? WHERE dialog_id=?",
+                      (State.TERMINATED.value, d.dialog_id))
+
+    def dialog(self, dialog_id: str) -> BDialog | None:
+        return self._row(dialog_id)
+
+
+# --------------------------------------------------------------------------
+# Agent A
+# --------------------------------------------------------------------------
+
+A_SCHEMA = """
+CREATE TABLE IF NOT EXISTS dialogs (
+    dialog_id TEXT PRIMARY KEY, state TEXT NOT NULL, epoch INTEGER NOT NULL,
+    ticket TEXT, next_seq INTEGER NOT NULL, pending_resume_id TEXT);
+CREATE TABLE IF NOT EXISTS ops (
+    dialog_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL,
+    state TEXT NOT NULL, result TEXT, PRIMARY KEY (dialog_id, seq));
+"""
+
+RETRYABLE = {Code.GATEWAY_DOWN, Code.DOWNSTREAM_UNAVAILABLE, Code.STORE_UNAVAILABLE,
+             Code.AUTHZ_UNAVAILABLE, Code.CONCURRENT_RECOVERY}
+
+
+class AgentA:
+    DOMAIN = "A"
+
+    def __init__(self, workdir: Path, obs: ObservationLog, id_scheme: str,
+                 principal: str = "alice@tenant-x", tenant: str = "tenant-x",
+                 name: str = "agent-a") -> None:
+        self.name = name
+        self.ctx = AuthContext(principal, tenant)
+        self.obs = obs
+        self.id_scheme = id_scheme
+        self.db = Database(Path(workdir) / f"domain_a_{name}.sqlite", f"a_{name}", None, A_SCHEMA)
+        self.events = EventEmitter("agent_a", self.DOMAIN, Redactor(new_key()))
+
+    def _row(self, dialog_id: str):
+        rows = self.db.query("SELECT * FROM dialogs WHERE dialog_id=?", (dialog_id,))
+        return rows[0] if rows else None
+
+    def state(self, dialog_id: str) -> tuple[str, int, str | None]:
+        r = self._row(dialog_id)
+        return r["state"], r["epoch"], r["ticket"]
+
+    def establish(self, gw: Gateway, task: str, dialog_id: str | None = None
+                  ) -> tuple[Code, str]:
+        prefix = "dlg" if self.id_scheme == "global" else "da"
+        dialog_id = dialog_id or new_identifier(prefix)
+        with self.db.tx() as c:
+            c.execute("INSERT INTO dialogs VALUES (?,?,?,?,?,NULL)",
+                      (dialog_id, State.ESTABLISHING.value, 0, None, 1))
+        self.obs.saw(self.DOMAIN, "dialog_id", dialog_id)
+        code, ticket = gw.establish(self.ctx, dialog_id, task)
+        if code is Code.OK:
+            self.obs.saw(self.DOMAIN, "ticket", ticket)
+            with self.db.tx() as c:
+                c.execute("UPDATE dialogs SET state=?, ticket=? WHERE dialog_id=?",
+                          (State.ACTIVE.value, ticket, dialog_id))
+        return code, dialog_id
+
+    def invoke(self, gw: Gateway, dialog_id: str, payload: str,
+               seq: int | None = None) -> OpResult:
+        r = self._row(dialog_id)
+        if seq is None:
+            seq = r["next_seq"]
+            with self.db.tx() as c:
+                c.execute("INSERT INTO ops VALUES (?,?,?,?,NULL)", (dialog_id, seq, payload, "SENT"))
+                c.execute("UPDATE dialogs SET next_seq=? WHERE dialog_id=?", (seq + 1, dialog_id))
+        res = gw.invoke(self.ctx, dialog_id, seq, payload)
+        if res.ok:
+            new_state = "COMMITTED"
+        elif res.code in (Code.DOWNSTREAM_UNAVAILABLE, Code.GATEWAY_DOWN):
+            new_state = "UNKNOWN"  # cannot tell whether B executed it
+            with self.db.tx() as c:
+                c.execute("UPDATE dialogs SET state=? WHERE dialog_id=?",
+                          (State.INTERRUPTED.value, dialog_id))
+        elif res.code is Code.OUTCOME_UNKNOWN:
+            new_state = "NEEDS_RECONCILIATION"
+        else:
+            new_state = "FAILED"
+        with self.db.tx() as c:
+            c.execute("UPDATE ops SET state=?, result=? WHERE dialog_id=? AND seq=?",
+                      (new_state, res.result, dialog_id, seq))
+        return res
+
+    def unknown_ops(self, dialog_id: str) -> list[tuple[int, str]]:
+        rows = self.db.query("SELECT seq, payload FROM ops WHERE dialog_id=? AND state='UNKNOWN'",
+                             (dialog_id,))
+        return [(r["seq"], r["payload"]) for r in rows]
+
+    def settle_unknown_ops(self, gw: Gateway, dialog_id: str) -> list[OpResult]:
+        """After resumption, resend ops whose outcome was unknown using the
+        SAME sequence number; B deduplicates on (dialog, seq)."""
+        return [self.invoke(gw, dialog_id, p, seq=s) for s, p in self.unknown_ops(dialog_id)]
+
+    def resume(self, gw: Gateway, dialog_id: str) -> ResumeResult:
+        r = self._row(dialog_id)
+        if r is None:
+            return ResumeResult(Code.DIALOG_NOT_FOUND)
+        req_id = r["pending_resume_id"] or new_identifier("rq")
+        with self.db.tx() as c:
+            c.execute("UPDATE dialogs SET pending_resume_id=? WHERE dialog_id=?", (req_id, dialog_id))
+        res = gw.resume(self.ctx, dialog_id, r["epoch"], req_id, r["ticket"])
+        with self.db.tx() as c:
+            if res.ok:
+                self.obs.saw(self.DOMAIN, "ticket", res.ticket)
+                c.execute("UPDATE dialogs SET state=?, epoch=?, ticket=COALESCE(?, ticket), "
+                          "pending_resume_id=NULL WHERE dialog_id=?",
+                          (State.ACTIVE.value, res.epoch, res.ticket, dialog_id))
+            elif res.code not in RETRYABLE:
+                c.execute("UPDATE dialogs SET pending_resume_id=NULL WHERE dialog_id=?", (dialog_id,))
+        self.events.emit("resume_attempt", ids={"dialog": dialog_id}, code=res.code.value)
+        return res
+
+    def terminate(self, gw: Gateway, dialog_id: str) -> Code:
+        code = gw.terminate(self.ctx, dialog_id)
+        if code is Code.OK:
+            with self.db.tx() as c:
+                c.execute("UPDATE dialogs SET state=? WHERE dialog_id=?",
+                          (State.TERMINATED.value, dialog_id))
+        return code
+
+    # test helper: simulate restoring Agent A's own state from an old backup
+    def _force_local(self, dialog_id: str, epoch: int, ticket: str | None) -> None:
+        with self.db.tx() as c:
+            c.execute("UPDATE dialogs SET epoch=?, ticket=?, pending_resume_id=NULL "
+                      "WHERE dialog_id=?", (epoch, ticket, dialog_id))
+

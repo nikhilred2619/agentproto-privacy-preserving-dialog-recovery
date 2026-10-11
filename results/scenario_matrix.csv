@@ -1,0 +1,135 @@
+scenario,mode,code,recovered,correct_association,explicit_failure,extra
+T01,global-store,OK,True,,False,"{""a_state"": ""ACTIVE"", ""b_dialog_exists"": true}"
+T01,global-endpoint,OK,True,,False,"{""a_state"": ""ACTIVE"", ""b_dialog_exists"": true}"
+T01,scoped-store,OK,True,,False,"{""a_state"": ""ACTIVE"", ""b_dialog_exists"": true}"
+T01,scoped-endpoint-noticket,OK,True,,False,"{""a_state"": ""ACTIVE"", ""b_dialog_exists"": true}"
+T01,scoped-endpoint-ticket,OK,True,,False,"{""a_state"": ""ACTIVE"", ""b_dialog_exists"": true}"
+T01,scoped-endpoint-medticket,OK,True,,False,"{""a_state"": ""ACTIVE"", ""b_dialog_exists"": true}"
+T02,global-store,OK,False,,False,"{""tool_executions"": 2}"
+T02,global-endpoint,OK,False,,False,"{""tool_executions"": 2}"
+T02,scoped-store,OK,False,,False,"{""tool_executions"": 2}"
+T02,scoped-endpoint-noticket,OK,False,,False,"{""tool_executions"": 2}"
+T02,scoped-endpoint-ticket,OK,False,,False,"{""tool_executions"": 2}"
+T02,scoped-endpoint-medticket,OK,False,,False,"{""tool_executions"": 2}"
+T03,global-store,OK,True,True,False,"{""invoke_during_outage"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T03,global-endpoint,OK,True,True,False,"{""invoke_during_outage"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T03,scoped-store,OK,True,True,False,"{""invoke_during_outage"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T03,scoped-endpoint-noticket,OK,True,True,False,"{""invoke_during_outage"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T03,scoped-endpoint-ticket,OK,True,True,False,"{""invoke_during_outage"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T03,scoped-endpoint-medticket,OK,True,True,False,"{""invoke_during_outage"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T04,global-store,OK,True,True,False,"{""g1_alive"": false, ""invoke_after"": ""OK"", ""invoke_during_crash"": ""GATEWAY_DOWN"", ""settled"": [""COMMITTED""], ""tool_executions"": 3}"
+T04,global-endpoint,OK,True,True,False,"{""g1_alive"": false, ""invoke_after"": ""OK"", ""invoke_during_crash"": ""GATEWAY_DOWN"", ""settled"": [""COMMITTED""], ""tool_executions"": 3}"
+T04,scoped-store,OK,True,True,False,"{""g1_alive"": false, ""invoke_after"": ""OK"", ""invoke_during_crash"": ""GATEWAY_DOWN"", ""settled"": [""COMMITTED""], ""tool_executions"": 3}"
+T04,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,"{""g1_alive"": false, ""invoke_after"": null, ""invoke_during_crash"": ""GATEWAY_DOWN"", ""settled"": [], ""tool_executions"": 1}"
+T04,scoped-endpoint-ticket,OK,True,True,False,"{""g1_alive"": false, ""invoke_after"": ""OK"", ""invoke_during_crash"": ""GATEWAY_DOWN"", ""settled"": [""COMMITTED""], ""tool_executions"": 3}"
+T04,scoped-endpoint-medticket,OK,True,True,False,"{""g1_alive"": false, ""invoke_after"": ""OK"", ""invoke_during_crash"": ""GATEWAY_DOWN"", ""settled"": [""COMMITTED""], ""tool_executions"": 3}"
+T05,global-store,MAPPING_NOT_FOUND,False,,True,{}
+T05,global-endpoint,OK,True,True,False,{}
+T05,scoped-store,MAPPING_NOT_FOUND,False,,True,{}
+T05,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,{}
+T05,scoped-endpoint-ticket,MAPPING_NOT_FOUND,False,,True,{}
+T05,scoped-endpoint-medticket,MAPPING_NOT_FOUND,False,,True,{}
+T06,global-store,MAPPING_NOT_FOUND,False,,True,"{""d2_code"": ""OK"", ""d2_correct"": true}"
+T06,global-endpoint,OK,True,True,False,"{""d2_code"": ""OK"", ""d2_correct"": true}"
+T06,scoped-store,MAPPING_NOT_FOUND,False,,True,"{""d2_code"": ""OK"", ""d2_correct"": true}"
+T06,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,"{""d2_code"": ""MAPPING_NOT_FOUND"", ""d2_correct"": false}"
+T06,scoped-endpoint-ticket,MAPPING_NOT_FOUND,False,,True,"{""d2_code"": ""OK"", ""d2_correct"": true}"
+T06,scoped-endpoint-medticket,MAPPING_NOT_FOUND,False,,True,"{""d2_code"": ""OK"", ""d2_correct"": true}"
+T07,global-store,OK,True,True,False,"{""establish_x"": ""OK"", ""establish_y"": ""INVALID_STATE"", ""resume_y"": null, ""y_correct"": false}"
+T07,global-endpoint,OK,True,True,False,"{""establish_x"": ""OK"", ""establish_y"": ""INVALID_STATE"", ""resume_y"": null, ""y_correct"": false}"
+T07,scoped-store,OK,True,True,False,"{""establish_x"": ""OK"", ""establish_y"": ""OK"", ""resume_y"": ""OK"", ""y_correct"": true}"
+T07,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,True,True,"{""establish_x"": ""OK"", ""establish_y"": ""OK"", ""resume_y"": ""MAPPING_NOT_FOUND"", ""y_correct"": false}"
+T07,scoped-endpoint-ticket,OK,True,True,False,"{""establish_x"": ""OK"", ""establish_y"": ""OK"", ""resume_y"": ""OK"", ""y_correct"": true}"
+T07,scoped-endpoint-medticket,OK,True,True,False,"{""establish_x"": ""OK"", ""establish_y"": ""OK"", ""resume_y"": ""OK"", ""y_correct"": true}"
+T08,global-store,STALE_REFERENCE,False,,True,"{""b_epoch"": 2}"
+T08,global-endpoint,STALE_REFERENCE,False,,True,"{""b_epoch"": 2}"
+T08,scoped-store,STALE_REFERENCE,False,,True,"{""b_epoch"": 2}"
+T08,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,"{""b_epoch"": 2}"
+T08,scoped-endpoint-ticket,STALE_REFERENCE,False,,True,"{""b_epoch"": 2}"
+T08,scoped-endpoint-medticket,STALE_REFERENCE,False,,True,"{""b_epoch"": 2}"
+T09,global-store,AUTHZ_EXPIRED,False,,True,{}
+T09,global-endpoint,AUTHZ_EXPIRED,False,,True,{}
+T09,scoped-store,AUTHZ_EXPIRED,False,,True,{}
+T09,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,{}
+T09,scoped-endpoint-ticket,AUTHZ_EXPIRED,False,,True,{}
+T09,scoped-endpoint-medticket,AUTHZ_EXPIRED,False,,True,{}
+T10,global-store,AUTHZ_REVOKED,False,,True,{}
+T10,global-endpoint,AUTHZ_REVOKED,False,,True,{}
+T10,scoped-store,AUTHZ_REVOKED,False,,True,{}
+T10,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,{}
+T10,scoped-endpoint-ticket,AUTHZ_REVOKED,False,,True,{}
+T10,scoped-endpoint-medticket,AUTHZ_REVOKED,False,,True,{}
+T11,global-store,PRINCIPAL_MISMATCH,False,,True,{}
+T11,global-endpoint,PRINCIPAL_MISMATCH,False,,True,{}
+T11,scoped-store,PRINCIPAL_MISMATCH,False,,True,{}
+T11,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,{}
+T11,scoped-endpoint-ticket,PRINCIPAL_MISMATCH,False,,True,{}
+T11,scoped-endpoint-medticket,PRINCIPAL_MISMATCH,False,,True,{}
+T12,global-store,MAPPING_INTEGRITY_FAILURE,False,,True,{}
+T12,global-endpoint,DIALOG_NOT_FOUND,False,,True,{}
+T12,scoped-store,MAPPING_INTEGRITY_FAILURE,False,,True,{}
+T12,scoped-endpoint-noticket,NOT_APPLICABLE,False,,False,"{""reason"": ""no recovery material exists to tamper with""}"
+T12,scoped-endpoint-ticket,TICKET_INVALID,False,,True,{}
+T12,scoped-endpoint-medticket,TICKET_INVALID,False,,True,{}
+T12b,global-store,STALE_REFERENCE,False,,True,"{""rolled_back"": true}"
+T12b,global-endpoint,NOT_APPLICABLE,False,,False,"{""reason"": ""replacement gateway reads no stored mapping""}"
+T12b,scoped-store,STALE_REFERENCE,False,,True,"{""rolled_back"": true}"
+T12b,scoped-endpoint-noticket,NOT_APPLICABLE,False,,False,"{""reason"": ""replacement gateway reads no stored mapping""}"
+T12b,scoped-endpoint-ticket,NOT_APPLICABLE,False,,False,"{""reason"": ""replacement gateway reads no stored mapping""}"
+T12b,scoped-endpoint-medticket,NOT_APPLICABLE,False,,False,"{""reason"": ""replacement gateway reads no stored mapping""}"
+T13,global-store,AUTHZ_UNAVAILABLE,False,,True,{}
+T13,global-endpoint,AUTHZ_UNAVAILABLE,False,,True,{}
+T13,scoped-store,AUTHZ_UNAVAILABLE,False,,True,{}
+T13,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,{}
+T13,scoped-endpoint-ticket,AUTHZ_UNAVAILABLE,False,,True,{}
+T13,scoped-endpoint-medticket,AUTHZ_UNAVAILABLE,False,,True,{}
+T14,global-store,OK,True,True,False,"{""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T14,global-endpoint,OK,True,True,False,"{""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T14,scoped-store,OK,True,True,False,"{""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T14,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,"{""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [], ""tool_executions"": 1}"
+T14,scoped-endpoint-ticket,OK,True,True,False,"{""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T14,scoped-endpoint-medticket,OK,True,True,False,"{""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""settled"": [""COMMITTED""], ""tool_executions"": 1}"
+T14b,global-store,OK,True,True,False,"{""after_reconcile"": ""COMMITTED"", ""executions_before_reconcile"": 1, ""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""reconcile"": ""COMMITTED"", ""settled"": [""OUTCOME_UNKNOWN""], ""tool_executions"": 1}"
+T14b,global-endpoint,OK,True,True,False,"{""after_reconcile"": ""COMMITTED"", ""executions_before_reconcile"": 1, ""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""reconcile"": ""COMMITTED"", ""settled"": [""OUTCOME_UNKNOWN""], ""tool_executions"": 1}"
+T14b,scoped-store,OK,True,True,False,"{""after_reconcile"": ""COMMITTED"", ""executions_before_reconcile"": 1, ""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""reconcile"": ""COMMITTED"", ""settled"": [""OUTCOME_UNKNOWN""], ""tool_executions"": 1}"
+T14b,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,"{""after_reconcile"": null, ""executions_before_reconcile"": 1, ""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""reconcile"": null, ""settled"": [], ""tool_executions"": 1}"
+T14b,scoped-endpoint-ticket,OK,True,True,False,"{""after_reconcile"": ""COMMITTED"", ""executions_before_reconcile"": 1, ""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""reconcile"": ""COMMITTED"", ""settled"": [""OUTCOME_UNKNOWN""], ""tool_executions"": 1}"
+T14b,scoped-endpoint-medticket,OK,True,True,False,"{""after_reconcile"": ""COMMITTED"", ""executions_before_reconcile"": 1, ""invoke_code"": ""DOWNSTREAM_UNAVAILABLE"", ""reconcile"": ""COMMITTED"", ""settled"": [""OUTCOME_UNKNOWN""], ""tool_executions"": 1}"
+T15,global-store,OK,True,True,False,"{""b_epoch"": 1, ""first"": ""OK"", ""same_result"": true}"
+T15,global-endpoint,OK,True,True,False,"{""b_epoch"": 1, ""first"": ""OK"", ""same_result"": true}"
+T15,scoped-store,OK,True,True,False,"{""b_epoch"": 1, ""first"": ""OK"", ""same_result"": true}"
+T15,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,"{""b_epoch"": 0, ""first"": ""MAPPING_NOT_FOUND"", ""same_result"": false}"
+T15,scoped-endpoint-ticket,OK,True,True,False,"{""b_epoch"": 1, ""first"": ""OK"", ""same_result"": true}"
+T15,scoped-endpoint-medticket,OK,True,True,False,"{""b_epoch"": 1, ""first"": ""OK"", ""same_result"": true}"
+T16,global-store,OK,True,True,False,"{""b_epoch"": 1, ""during_lease"": ""CONCURRENT_RECOVERY"", ""first"": ""GATEWAY_DOWN"", ""store_state"": ""ACTIVE""}"
+T16,global-endpoint,OK,True,True,False,"{""b_epoch"": 1, ""during_lease"": ""OK"", ""first"": ""GATEWAY_DOWN"", ""store_state"": ""ACTIVE""}"
+T16,scoped-store,OK,True,True,False,"{""b_epoch"": 1, ""during_lease"": ""CONCURRENT_RECOVERY"", ""first"": ""GATEWAY_DOWN"", ""store_state"": ""ACTIVE""}"
+T16,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,"{""b_epoch"": 0, ""during_lease"": ""MAPPING_NOT_FOUND"", ""first"": ""MAPPING_NOT_FOUND"", ""store_state"": null}"
+T16,scoped-endpoint-ticket,OK,True,True,False,"{""b_epoch"": 1, ""during_lease"": ""OK"", ""first"": ""GATEWAY_DOWN"", ""store_state"": ""ACTIVE""}"
+T16,scoped-endpoint-medticket,OK,True,True,False,"{""b_epoch"": 1, ""during_lease"": ""OK"", ""first"": ""GATEWAY_DOWN"", ""store_state"": ""ACTIVE""}"
+T16b,global-store,MAPPING_NOT_FOUND,False,,True,"{""establish"": ""GATEWAY_DOWN"", ""mapping_rows"": 0, ""orphan_b_dialogs"": 1}"
+T16b,global-endpoint,OK,True,True,False,"{""establish"": ""GATEWAY_DOWN"", ""mapping_rows"": 0, ""orphan_b_dialogs"": 1}"
+T16b,scoped-store,MAPPING_NOT_FOUND,False,,True,"{""establish"": ""GATEWAY_DOWN"", ""mapping_rows"": 0, ""orphan_b_dialogs"": 1}"
+T16b,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,"{""establish"": ""GATEWAY_DOWN"", ""mapping_rows"": 0, ""orphan_b_dialogs"": 1}"
+T16b,scoped-endpoint-ticket,MAPPING_NOT_FOUND,False,,True,"{""establish"": ""GATEWAY_DOWN"", ""mapping_rows"": 0, ""orphan_b_dialogs"": 1}"
+T16b,scoped-endpoint-medticket,MAPPING_NOT_FOUND,False,,True,"{""establish"": ""GATEWAY_DOWN"", ""mapping_rows"": 0, ""orphan_b_dialogs"": 1}"
+T18,global-store,CONCURRENT_RECOVERY|OK,True,True,False,"{""b_epoch"": 1, ""distinct_epochs"": 1, ""successes"": 1}"
+T18,global-endpoint,OK|OK,True,True,False,"{""b_epoch"": 1, ""distinct_epochs"": 1, ""successes"": 2}"
+T18,scoped-store,CONCURRENT_RECOVERY|OK,True,True,False,"{""b_epoch"": 1, ""distinct_epochs"": 1, ""successes"": 1}"
+T18,scoped-endpoint-noticket,MAPPING_NOT_FOUND|MAPPING_NOT_FOUND,False,,True,"{""b_epoch"": 0, ""distinct_epochs"": 0, ""successes"": 0}"
+T18,scoped-endpoint-ticket,OK|OK,True,True,False,"{""b_epoch"": 1, ""distinct_epochs"": 1, ""successes"": 2}"
+T18,scoped-endpoint-medticket,OK|OK,True,True,False,"{""b_epoch"": 1, ""distinct_epochs"": 1, ""successes"": 2}"
+T19,global-store,DIALOG_TERMINATED,False,,True,{}
+T19,global-endpoint,DIALOG_TERMINATED,False,,True,{}
+T19,scoped-store,DIALOG_TERMINATED,False,,True,{}
+T19,scoped-endpoint-noticket,MAPPING_NOT_FOUND,False,,True,{}
+T19,scoped-endpoint-ticket,DIALOG_TERMINATED,False,,True,{}
+T19,scoped-endpoint-medticket,DIALOG_TERMINATED,False,,True,{}
+T20,global-store,STORE_UNAVAILABLE,False,,True,"{""after_restore"": ""OK"", ""b_store_down"": ""DOWNSTREAM_UNAVAILABLE""}"
+T20,global-endpoint,STORE_UNAVAILABLE,False,,True,"{""after_restore"": ""OK"", ""b_store_down"": ""DOWNSTREAM_UNAVAILABLE""}"
+T20,scoped-store,STORE_UNAVAILABLE,False,,True,"{""after_restore"": ""OK"", ""b_store_down"": ""DOWNSTREAM_UNAVAILABLE""}"
+T20,scoped-endpoint-noticket,STORE_UNAVAILABLE,False,,True,"{""after_restore"": ""MAPPING_NOT_FOUND"", ""b_store_down"": ""MAPPING_NOT_FOUND""}"
+T20,scoped-endpoint-ticket,STORE_UNAVAILABLE,False,,True,"{""after_restore"": ""OK"", ""b_store_down"": ""DOWNSTREAM_UNAVAILABLE""}"
+T20,scoped-endpoint-medticket,STORE_UNAVAILABLE,False,,True,"{""after_restore"": ""OK"", ""b_store_down"": ""DOWNSTREAM_UNAVAILABLE""}"
+T05,scoped-store+UNSAFE_GUESS,MAPPING_NOT_FOUND,False,,True,{}
+T06,scoped-store+UNSAFE_GUESS,OK,True,False,False,"{""d2_code"": ""STALE_REFERENCE"", ""d2_correct"": false}"
