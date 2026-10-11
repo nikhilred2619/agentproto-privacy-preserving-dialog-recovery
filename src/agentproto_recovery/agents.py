@@ -372,8 +372,23 @@ CREATE TABLE IF NOT EXISTS dialogs (
     ticket TEXT, next_seq INTEGER NOT NULL, pending_resume_id TEXT);
 CREATE TABLE IF NOT EXISTS ops (
     dialog_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL,
-    state TEXT NOT NULL, result TEXT, PRIMARY KEY (dialog_id, seq));
+    state TEXT NOT NULL, result TEXT, attempt INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (dialog_id, seq));
 """
+
+# Agent A's local operation ledger (see docs/architecture.md, "Agent A
+# operation ledger"). One row per (dialog, seq). The payload of a row never
+# changes after insertion. COMMITTED is terminal: its state, payload and
+# result never change. Every other state can be retried with the SAME payload.
+#
+#   (none) --reserve--> SENT
+#   SENT / UNKNOWN / NEEDS_RECONCILIATION / FAILED / CONFLICT
+#          --retry (same payload, attempt+1)--> SENT
+#   SENT   --OK (from any attempt)----------------------------> COMMITTED
+#   SENT   --non-OK response of the CURRENT attempt----------> UNKNOWN |
+#                                   NEEDS_RECONCILIATION | FAILED | CONFLICT
+#   COMMITTED --anything-------------------------------------> COMMITTED
+OP_STATES = ("SENT", "UNKNOWN", "NEEDS_RECONCILIATION", "FAILED", "CONFLICT", "COMMITTED")
 
 RETRYABLE = {Code.GATEWAY_DOWN, Code.DOWNSTREAM_UNAVAILABLE, Code.STORE_UNAVAILABLE,
              Code.AUTHZ_UNAVAILABLE, Code.CONCURRENT_RECOVERY}
@@ -418,30 +433,86 @@ class AgentA:
 
     def invoke(self, gw: Gateway, dialog_id: str, payload: str,
                seq: int | None = None) -> OpResult:
-        r = self._row(dialog_id)
-        if seq is None:
-            seq = r["next_seq"]
-            with self.db.tx() as c:
-                c.execute("INSERT INTO ops VALUES (?,?,?,?,NULL)", (dialog_id, seq, payload, "SENT"))
-                c.execute("UPDATE dialogs SET next_seq=? WHERE dialog_id=?", (seq + 1, dialog_id))
+        """Send one operation. `seq=None` allocates the next number; an
+        explicit `seq` is a retry of an operation in the local ledger.
+
+        Policy for an explicit seq with no local row ("adoption"): the row is
+        inserted with this payload in the same transaction that checks for it,
+        and `next_seq` is raised past it so automatic allocation never reuses
+        it. This covers an Agent A that lost its ledger and retries what it
+        believes it sent; Agent B's payload digest still rejects a mismatch.
+        """
+        reserved = self._reserve(dialog_id, payload, seq)
+        if isinstance(reserved, OpResult):
+            return reserved  # answered from the local ledger; nothing dispatched
+        seq, attempt = reserved
         res = gw.invoke(self.ctx, dialog_id, seq, payload)
-        if res.ok:
-            new_state = "COMMITTED"
-        elif res.code in (Code.DOWNSTREAM_UNAVAILABLE, Code.GATEWAY_DOWN):
-            new_state = "UNKNOWN"  # cannot tell whether B executed it
-            with self.db.tx() as c:
+        self._record(dialog_id, seq, attempt, res)
+        return res
+
+    def _reserve(self, dialog_id: str, payload: str, seq: int | None
+                 ) -> tuple[int, int] | OpResult:
+        with self.db.tx() as c:
+            d = c.execute("SELECT next_seq FROM dialogs WHERE dialog_id=?",
+                          (dialog_id,)).fetchone()
+            if d is None:
+                return OpResult(Code.DIALOG_NOT_FOUND)
+            if seq is None:
+                seq = d["next_seq"]
+                c.execute("INSERT INTO ops VALUES (?,?,?,?,NULL,1)",
+                          (dialog_id, seq, payload, "SENT"))
+                c.execute("UPDATE dialogs SET next_seq=? WHERE dialog_id=?", (seq + 1, dialog_id))
+                return seq, 1
+            row = c.execute("SELECT payload, state, result, attempt FROM ops "
+                            "WHERE dialog_id=? AND seq=?", (dialog_id, seq)).fetchone()
+            if row is None:  # adoption, see docstring of invoke()
+                c.execute("INSERT INTO ops VALUES (?,?,?,?,NULL,1)",
+                          (dialog_id, seq, payload, "SENT"))
+                c.execute("UPDATE dialogs SET next_seq=MAX(next_seq, ?) WHERE dialog_id=?",
+                          (seq + 1, dialog_id))
+                return seq, 1
+            if not hmac.compare_digest(row["payload"].encode(), payload.encode()):
+                # Checked before any dispatch; the existing row is not touched.
+                return OpResult(Code.SEQUENCE_CONFLICT, row["state"], None,
+                                "sequence number already recorded locally for a "
+                                "different payload")
+            if row["state"] == "COMMITTED":
+                return OpResult(Code.OK, "COMMITTED", row["result"], "deduplicated")
+            attempt = row["attempt"] + 1
+            c.execute("UPDATE ops SET state='SENT', attempt=? WHERE dialog_id=? AND seq=? "
+                      "AND attempt=? AND state!='COMMITTED'",
+                      (attempt, dialog_id, seq, row["attempt"]))
+            return seq, attempt
+
+    def _record(self, dialog_id: str, seq: int, attempt: int, res: OpResult) -> None:
+        """Apply a response to the ledger. A success from any attempt may
+        commit (Agent B holds one result per (dialog, seq)); a non-success is
+        applied only if it belongs to the latest attempt; nothing replaces
+        COMMITTED."""
+        with self.db.tx() as c:
+            if res.ok:
+                c.execute("UPDATE ops SET state='COMMITTED', result=? WHERE dialog_id=? "
+                          "AND seq=? AND state!='COMMITTED'", (res.result, dialog_id, seq))
+                return
+            if res.code in (Code.DOWNSTREAM_UNAVAILABLE, Code.GATEWAY_DOWN,
+                            Code.OPERATION_ABORTED):
+                new_state = "UNKNOWN"  # cannot tell (or fenced): resend same seq later
+            elif res.code is Code.OUTCOME_UNKNOWN:
+                new_state = "NEEDS_RECONCILIATION"
+            elif res.code is Code.SEQUENCE_CONFLICT:
+                new_state = "CONFLICT"  # B holds a different payload for this seq
+            else:
+                new_state = "FAILED"
+            cur = c.execute("UPDATE ops SET state=? WHERE dialog_id=? AND seq=? AND attempt=? "
+                            "AND state!='COMMITTED'", (new_state, dialog_id, seq, attempt))
+            if cur.rowcount and res.code in (Code.DOWNSTREAM_UNAVAILABLE, Code.GATEWAY_DOWN):
                 c.execute("UPDATE dialogs SET state=? WHERE dialog_id=?",
                           (State.INTERRUPTED.value, dialog_id))
-        elif res.code is Code.OUTCOME_UNKNOWN:
-            new_state = "NEEDS_RECONCILIATION"
-        elif res.code is Code.OPERATION_ABORTED:
-            new_state = "UNKNOWN"  # fenced, never executed: safe to resend same seq
-        else:
-            new_state = "FAILED"
-        with self.db.tx() as c:
-            c.execute("UPDATE ops SET state=?, result=? WHERE dialog_id=? AND seq=?",
-                      (new_state, res.result, dialog_id, seq))
-        return res
+
+    def op(self, dialog_id: str, seq: int) -> dict | None:
+        rows = self.db.query("SELECT state, payload, result, attempt FROM ops "
+                             "WHERE dialog_id=? AND seq=?", (dialog_id, seq))
+        return dict(rows[0]) if rows else None
 
     def unknown_ops(self, dialog_id: str) -> list[tuple[int, str]]:
         rows = self.db.query("SELECT seq, payload FROM ops WHERE dialog_id=? AND state='UNKNOWN'",

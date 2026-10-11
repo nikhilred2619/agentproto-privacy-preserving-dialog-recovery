@@ -51,6 +51,17 @@ what they cost.
   architecture work will need to answer. Details:
   [docs/protocol_gap_analysis.md](docs/protocol_gap_analysis.md).
 
+## v0.2.1: client ledger integrity
+
+A second audit found that Agent A's local operation ledger could overwrite a
+COMMITTED operation: a retry that reused a sequence number with a different
+payload, or a late error from an older attempt, rewrote the row to
+FAILED/UNKNOWN with a NULL result. Reproduced on v0.2.0 (26 of 36 new test
+cases failing), fixed with transactional, attempt-aware ledger updates and a
+local payload check before dispatch; 44 of 44 pass on v0.2.1. Experiment
+outputs were re-run and are unchanged. See
+[docs/results.md](docs/results.md#ledger-integrity-repair-v020--v021).
+
 ## v0.2.0: audit repair
 
 An independent audit of v0.1.0 reported three defects. All three were
@@ -129,7 +140,7 @@ pip install -e ".[test]"
 pytest
 ```
 
-Expected: `189 passed`. Each test builds its own deployment in a temporary
+Expected: `233 passed`. Each test builds its own deployment in a temporary
 directory; tests do not share state.
 
 ## Run the experiments
@@ -157,6 +168,8 @@ Benchmark only: `python experiments/benchmark.py`. `--help` lists the knobs
 | `results/environment_<cmd>.json` | Python, SQLite, platform, arguments, wall time |
 | `results/summary.md` | generated Markdown tables |
 | `results/audit_regressions_*.txt` | audit regression tests run before and after the v0.2.0 fixes |
+| `results/ledger_integrity_*.txt` | ledger-integrity tests run on v0.2.0 (before) and v0.2.1 (after) |
+| `results/v0.2.1_rerun_check.txt` | evidence that v0.2.1 reproduces the committed experiment outputs exactly |
 
 The committed `results/` are from the run described in
 [docs/results.md](docs/results.md).
@@ -200,6 +213,9 @@ Draft-ready note for the list:
 * The ticket binding stops substitution of another dialog's ticket, but a
   compromised gateway can still mis-route, since it chooses which upstream id
   to derive the binding from.
+* Agent A has no crash/restart model: a crash between dispatch and recording
+  leaves a SENT row that `settle_unknown_ops` (which only resends UNKNOWN)
+  will not retry automatically.
 * The fault schedule covers a fixed list of faults; v0.1.0 showed that a
   clean result only covers what is in the list.
 * Latency numbers are dominated by SQLite fsync on the test machine and vary

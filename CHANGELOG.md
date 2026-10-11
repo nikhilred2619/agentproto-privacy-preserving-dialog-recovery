@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.2.1 — 2026-10-11
+
+Focused patch: Agent A's local operation ledger.
+
+### Fixed
+
+- **A COMMITTED operation could be overwritten.** `AgentA.invoke()` with an
+  explicit `seq` forwarded the request without reading the local row, then
+  applied an unconditional `UPDATE` with the response. A retry reusing seq 1
+  with a different payload (rejected by B as `SEQUENCE_CONFLICT`) turned the
+  COMMITTED row into FAILED with a NULL result; a late error from an older
+  attempt turned it into UNKNOWN; concurrent conflicting submissions could
+  leave no row or a corrupted one. Reproduced on 0.2.0: 26 of 36 new test
+  cases failed (`results/ledger_integrity_before_fix.txt`).
+- Repair: `_reserve()` checks the local row in a transaction before dispatch
+  (different payload → local `SEQUENCE_CONFLICT`, no gateway call, no write;
+  COMMITTED + same payload → answered from the ledger; otherwise attempt + 1).
+  `_record()` commits on success from any attempt, applies a non-success only
+  to the current attempt, and never updates a COMMITTED row.
+
+### Added
+
+- `tests/test_operation_ledger_integrity.py`: Tests A-G across global-store,
+  scoped-store, scoped-endpoint-ticket and scoped-endpoint-medticket (Test H),
+  plus two cases that keep Agent B's payload-digest check covered now that
+  Agent A rejects conflicts first. 44 cases, all passing.
+- `AgentA.op()` accessor; `ops.attempt` column; local state `CONFLICT`.
+- Documented policy for an explicit seq with no local row (adopt it and move
+  `next_seq` past it).
+
+### Unchanged
+
+- Agent B payload digest, ticket binding, operation fencing (v0.2.0).
+- Experimental results: scenario matrix, fault schedule and privacy outputs
+  re-run on 0.2.1 and identical to the committed files
+  (`results/v0.2.1_rerun_check.txt`). Benchmark not re-run; it does not call
+  the changed code.
+- No existing test was modified. Full suite: 233 passed on Python 3.11, 3.12
+  and 3.13.
+
 ## 0.2.0 — 2026-10-11
 
 Repairs for three defects reported by an independent audit of 0.1.0. The

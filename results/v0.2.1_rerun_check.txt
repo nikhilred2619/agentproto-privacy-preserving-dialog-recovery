@@ -1,0 +1,37 @@
+# v0.2.1 re-run check, 2026-10-11T10:30:26Z
+Re-ran: agentproto-recovery scenarios, faults, privacy (default arguments) into a scratch directory and compared with the committed v0.2.0 results:
+- scenario_matrix.csv: 152/152 cells identical (code, recovered, correct_association, explicit_failure, extra)
+- scenario_summary.json: identical
+- fault_schedule.csv: 1,890/1,890 rows identical (mode, seed, dialog, fault, code, recovered, correct_association, safety_violation)
+- fault_summary.json: identical
+- privacy.json: identical
+Benchmark not re-run: benchmark_mode() establishes and resumes dialogs only and never calls AgentA.invoke(), the only code path changed in v0.2.1.
+Committed result files from the v0.2.0 run were therefore left in place.
+
+Environment of the re-run:
+{
+  "agentproto_recovery": "0.2.1",
+  "args": {
+    "bench_dialogs": 400,
+    "command": "privacy",
+    "fault_dialogs": 90,
+    "out": "/tmp/claude-0/-home-claude/06d19ff2-b7b6-576f-ba57-c97e787c4e83/scratchpad/rerun021",
+    "privacy_dialogs": 50,
+    "repeats": 3,
+    "runs": 5,
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "threads": 4
+  },
+  "cpu_count": 2,
+  "cryptography": "50.0.1",
+  "machine": "x86_64",
+  "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+  "python": "3.13.16",
+  "sqlite": "3.45.1",
+  "timestamp_utc": "2026-10-11T10:27:49Z",
+  "wall_seconds": 3.86
+}

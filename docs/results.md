@@ -9,6 +9,71 @@ time 90 s). Full tables: `results/summary.md` (generated); raw data:
 Version 0.1.0 results were replaced, not merged. Section "Audit repair"
 lists what changed and why.
 
+**v0.2.1 note.** The patch release changes only Agent A's local operation
+ledger. The scenario matrix, fault schedule and privacy analysis were re-run
+on v0.2.1 and compared with the committed v0.2.0 files: every cell and row was
+identical (`results/v0.2.1_rerun_check.txt`), so the result files above and
+below were left unchanged and remain valid for v0.2.1. The benchmark was not
+re-run because it never calls the changed code path.
+
+## Ledger integrity repair (v0.2.0 → v0.2.1)
+
+A further audit found that Agent A's local operation ledger could lose a
+committed result. Steps: seq 1 "pay-10" commits; a later call reuses seq 1
+with "pay-1000"; Agent B correctly answers `SEQUENCE_CONFLICT`; Agent A then
+rewrote its COMMITTED row to FAILED with a NULL result.
+
+**Root cause** (`AgentA.invoke`, v0.2.0): with an explicit `seq` the method
+did not read the local row at all; it forwarded the request and then ran an
+unconditional `UPDATE ops SET state=?, result=? WHERE dialog_id=? AND seq=?`
+with whatever the response implied. Nothing compared payloads, nothing
+protected COMMITTED, and nothing distinguished the response of an older
+attempt from the latest one. With an explicit seq and no local row, the
+final UPDATE matched nothing, so the operation was dispatched without any
+local record.
+
+**Reproduction on v0.2.0:** `tests/test_operation_ledger_integrity.py` run
+against the unmodified code: **26 failed, 10 passed**
+(`results/ledger_integrity_before_fix.txt`). Failing: A (committed row
+overwritten), B (conflict dispatched to the gateway), E (unsettled row
+overwritten), F (concurrent submissions: no local row or a corrupted one),
+G (late error overwrote COMMITTED). Passing on v0.2.0 as expected: C and D
+(identical retries), and 2 of the 8 Test F cases, whose outcome on v0.2.0
+depended on thread timing.
+
+**Repair** (`src/agentproto_recovery/agents.py`):
+
+* `_reserve()` runs in one `BEGIN IMMEDIATE` transaction before any dispatch.
+  An existing row with a different payload returns `SEQUENCE_CONFLICT`
+  without contacting the gateway and without writing. A COMMITTED row with
+  the same payload is answered from the ledger (`deduplicated`). Any other
+  row with the same payload gets `attempt + 1` and is dispatched again.
+* `_record()` applies the response in a transaction. Success from any
+  attempt may set COMMITTED, because Agent B keeps exactly one result per
+  `(dialog, seq)`. A non-success is applied only to the row's current
+  attempt. No update ever matches a COMMITTED row (`AND state!='COMMITTED'`).
+* Explicit seq with no local row ("adoption"): the row is inserted with that
+  payload in the same transaction that checked for it, and `next_seq` is
+  raised past it. Agent B's payload digest still rejects a payload that
+  differs from what B executed; Agent A then records CONFLICT.
+* New column `ops.attempt`; new local state `CONFLICT`. Agent B's payload
+  digest, the ticket binding and operation fencing from v0.2.0 are unchanged.
+
+**After the repair:** the same file plus 8 defence-in-depth cases: **44
+passed** (`results/ledger_integrity_after_fix.txt`). No existing test was
+modified.
+
+**Why an immutable committed result matters.** The committed row is Agent
+A's only local evidence that a side effect happened and what it produced.
+Recovery logic reads it to decide what not to resend; operators and audits
+read it to learn what the agent did. If a rejected or late response can
+rewrite it, the agent can believe a completed payment failed and issue a new
+one under a fresh sequence number (Agent B would correctly accept that as a
+different operation), or lose the result that a later step depends on. Agent
+B's deduplication cannot protect against that, because from B's side the new
+request is legitimate. Keeping COMMITTED immutable is what makes "retry until
+you know" safe on the client side.
+
 ## Audit repair (v0.1.0 → v0.2.0)
 
 An independent audit reported three defects in v0.1.0. The audit report and
@@ -45,18 +110,23 @@ what is asserted.
 
 ## Test suite
 
-`pytest`: **189 passed** (181 from v0.1.0, 6 audit regression cases, 2 new
-privacy checks for the ticket binding).
+v0.2.1: `pytest`: **233 passed** (181 from v0.1.0, 8 added in v0.2.0,
+44 in `test_operation_ledger_integrity.py`).
 
-Verification runs on 2026-10-11, all with the same result:
+v0.2.1 verification runs on 2026-10-11, all with the same result:
 
-* 5 consecutive full runs on Python 3.13: 189 passed each time.
-* From a fresh clone in new virtualenvs: 189 passed on Python 3.11, 3.12
-  and 3.13; `tests/test_audit_regressions.py` alone: 6 passed.
-* The threaded tests (`test_audit_regressions.py`, `test_concurrency.py`)
-  run 20 more times: green every time. No flaky test observed.
-* The README experiment commands (reduced sizes) completed from the fresh
-  clone.
+* `pytest -q`: 233 passed. `pytest tests/test_operation_ledger_integrity.py
+  -v`: 44 passed. `pytest tests/test_audit_regressions.py -v`: 6 passed.
+* Gateway-failover, authorization, replay, side-effect, concurrency and
+  privacy files together: 133 passed.
+* 5 consecutive full runs on Python 3.13: 233 passed each time.
+* From a clean copy in new virtualenvs: 233 passed on Python 3.11, 3.12 and
+  3.13 (ledger file 44 passed and audit file 6 passed on each).
+* The threaded files (`test_operation_ledger_integrity.py`,
+  `test_audit_regressions.py`, `test_concurrency.py`) run 20 more times
+  together: green every time. No flaky test observed.
+
+v0.2.0 (for reference): 189 passed, including on Python 3.11 and 3.12.
 
 ## E1 Scenario matrix
 

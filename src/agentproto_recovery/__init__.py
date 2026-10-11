@@ -4,4 +4,4 @@ Independent experiment. Not an IETF implementation and not a claim of
 compliance with any draft or standard.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

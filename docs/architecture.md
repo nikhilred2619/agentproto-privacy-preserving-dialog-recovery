@@ -196,6 +196,43 @@ row, plus fencing at the tool for reconciliation (T14, T14b, T22, T23).
   retry of a `NOT_EXECUTED` op starts attempt + 1 under a new key.
 * SQLite runs in WAL mode with `synchronous=FULL`.
 
+## Agent A operation ledger (v0.2.1)
+
+Agent A keeps one row per `(dialog, seq)` in its own database: payload,
+state, result, attempt. The payload is written once and never changed.
+
+```mermaid
+stateDiagram-v2
+    [*] --> SENT: reserve (new seq, or adopted explicit seq)
+    SENT --> COMMITTED: OK from any attempt
+    SENT --> UNKNOWN: lost / fenced (current attempt)
+    SENT --> NEEDS_RECONCILIATION: OUTCOME_UNKNOWN (current attempt)
+    SENT --> CONFLICT: B holds another payload (current attempt)
+    SENT --> FAILED: other rejection (current attempt)
+    UNKNOWN --> SENT: retry, same payload, attempt+1
+    NEEDS_RECONCILIATION --> SENT: retry, same payload, attempt+1
+    CONFLICT --> SENT: retry, same payload, attempt+1
+    FAILED --> SENT: retry, same payload, attempt+1
+    COMMITTED --> COMMITTED: any later request or response
+```
+
+Rules, each enforced inside a SQLite transaction:
+
+* A request whose payload differs from the stored one is rejected locally
+  (`SEQUENCE_CONFLICT`) before dispatch; the row is not written.
+* A request for a COMMITTED row with the same payload is answered from the
+  ledger without dispatch.
+* A success may commit from any attempt, since Agent B stores one result per
+  `(dialog, seq)`; a non-success applies only to the current attempt.
+* No update matches a COMMITTED row.
+* An explicit seq with no local row is adopted: inserted with its payload,
+  and `next_seq` moves past it.
+
+The client ledger exists because Agent B's deduplication cannot prevent a
+client that has lost track of a committed operation from issuing it again
+under a new sequence number; see `docs/results.md`, "Why an immutable
+committed result matters".
+
 ## Invariants
 
 | Invariant | Mechanism | Evidence | Status |
@@ -206,7 +243,8 @@ row, plus fencing at the tool for reconciliation (T14, T14b, T22, T23).
 | I4 Never overwrite newer state with an older checkpoint | CAS on version / epoch, `restore_checkpoint` | `test_older_checkpoint_cannot_overwrite_newer_state`, T08, T12b | Demonstrated for the store and B; Agent A's own local DB is not protected (test helper `_force_local` rolls it back on purpose) |
 | I5 Never claim success without mandatory state | every missing piece maps to a non-OK code | T05, T13, T16b, T20 | Demonstrated |
 | I6 Never repeat a side effect because a response was lost | `(dialog, seq)` dedup with payload digest, write-ahead `PENDING` with lease and incarnation, reconciliation by fencing at the tool | T14, T14b, T22, T23, `test_reconcile_when_tool_never_ran` | Demonstrated in-process. **v0.1.0 violated it** when reconciliation raced a live call. Depends on the tool offering an atomic fence (or honouring idempotency keys); a tool without that cannot be reconciled safely by software |
-| I8 One seq names one operation | payload digest stored with the op | T23 | Demonstrated; v0.1.0 silently deduplicated a different payload |
+| I8 One seq names one operation | payload digest stored with the op at B; local payload check at A before dispatch | T23, `test_operation_ledger_integrity.py` | Demonstrated; v0.1.0 silently deduplicated a different payload at B |
+| I9 A committed operation stays committed with its payload and result | `_reserve` / `_record` transactions; no update matches COMMITTED; non-success applies only to the current attempt | `test_operation_ledger_integrity.py` Tests A, E, F, G | Demonstrated in-process with threads. **v0.2.0 violated it** (conflicting retry and late errors overwrote COMMITTED) |
 | I7 One epoch transition per resumption, even under races | CAS at B, lease + CAS at gateway | T16, T18, 8-way race test | Demonstrated with threads in one process; not tested across processes or hosts |
 
 Unproven: behaviour under real network partitions, clock skew between
