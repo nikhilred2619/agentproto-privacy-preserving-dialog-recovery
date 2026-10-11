@@ -1,0 +1,11 @@
+# tests/test_audit_regressions.py run against v0.1.0 code (commit 1665af3), 2026-10-11T10:02:53Z
+FAILED tests/test_audit_regressions.py::test_ticket_of_other_dialog_is_rejected[scoped-endpoint-ticket]
+FAILED tests/test_audit_regressions.py::test_ticket_of_other_dialog_is_rejected[scoped-endpoint-medticket]
+FAILED tests/test_audit_regressions.py::test_reconcile_while_tool_call_in_flight_does_not_clear_pending
+FAILED tests/test_audit_regressions.py::test_late_tool_call_after_reconcile_is_fenced_not_duplicated
+FAILED tests/test_audit_regressions.py::test_duplicate_seq_with_different_payload_is_rejected[committed]
+FAILED tests/test_audit_regressions.py::test_duplicate_seq_with_different_payload_is_rejected[pending]
+
+# Direct reproduction of finding 1 on v0.1.0 (git worktree at 1665af3), same day:
+scoped-endpoint-ticket    v0.1.0 T21: OK; B resumed dialog 2's B-side dialog; G2 persisted mapping d1 -> dialog 2's B-side dialog
+scoped-endpoint-medticket v0.1.0 T21: OK; B resumed dialog 2's B-side dialog; G2 persisted mapping d1 -> dialog 2's B-side dialog

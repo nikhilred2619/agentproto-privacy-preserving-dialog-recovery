@@ -30,7 +30,7 @@ from .errors import Code
 from .failure_injection import FailureInjector, ManualClock
 from .gateways import Gateway, GatewayConfig
 from .persistence import Database
-from .security import RecordSigner, TicketInvalid, new_identifier, new_key
+from .security import RecordSigner, TicketInvalid, new_identifier, new_key, upstream_binding
 
 ACTIONS = {"delegate", "invoke", "resume"}
 
@@ -68,7 +68,8 @@ class Deployment:
         self.injector = FailureInjector()
         self.obs = ObservationLog()
         self.authz = AuthorizationService(self.clock, self.injector)
-        self.b = AgentB(self.workdir, self.authz, self.injector, self.obs, self.mode.tickets)
+        self.b = AgentB(self.workdir, self.authz, self.injector, self.obs, self.mode.tickets,
+                        clock=self.clock)
         self.cfg = GatewayConfig(self.mode.id_scheme, self.mode.recovery_source, lease_seconds,
                                  unsafe_guess, self.mode.fed_tickets)
         self.federation_key = new_key()  # only used when mode.fed_tickets
@@ -487,11 +488,78 @@ def s_t20(dep: Deployment) -> Outcome:
                     after_restore=res_after.code.value)
 
 
+def s_t21(dep: Deployment) -> Outcome:
+    """Audit finding 1: resume dialog 1 while presenting dialog 2's valid
+    ticket (same principal, same epoch)."""
+    a = dep.agent_a()
+    _, d1 = dep.establish(a, "dialog one")
+    _, d2 = dep.establish(a, "dialog two")
+    _, e1, _ = a.state(d1)
+    _, _, t2 = a.state(d2)
+    dep.crash_g1()
+    res = dep.g2.resume(a.ctx, d1, e1, new_identifier("rq"), t2)
+    out = _outcome("T21", dep, res.code, d1)
+    out.extra = {"d2_epoch_after": dep.b.dialog(dep.truth[d2]).epoch,
+                 "ticket_presented": t2 is not None}
+    return out
+
+
+def _block_tool(dep: Deployment) -> tuple[threading.Event, threading.Event]:
+    gate, entered = threading.Event(), threading.Event()
+    real = dep.b.tool.execute
+
+    def slow(op_key: str, payload: str) -> str:
+        entered.set()
+        gate.wait(10)
+        return real(op_key, payload)
+
+    dep.b.tool.execute = slow  # type: ignore[method-assign]
+    return gate, entered
+
+
+def s_t22(dep: Deployment) -> Outcome:
+    """Audit finding 2: reconciliation while the tool call is still running,
+    then again after the executor's lease expired (late call is fenced)."""
+    a = dep.agent_a()
+    _, d_a = dep.establish(a)
+    d_b = dep.truth[d_a]
+    gate, entered = _block_tool(dep)
+    res: dict[str, Any] = {}
+    t = threading.Thread(target=lambda: res.setdefault("r", a.invoke(dep.g1, d_a, "pay-10")))
+    t.start()
+    entered.wait(10)
+    during = dep.b.reconcile(d_b, 1)
+    dep.clock.advance(600)
+    after_lease = dep.b.reconcile(d_b, 1)
+    gate.set()
+    t.join(10)
+    first = res["r"].code.value
+    retry = a.invoke(dep.g1, d_a, "pay-10", seq=1)
+    execs = dep.b.tool.executions()
+    return Outcome("T22", dep.mode.name, during, False, None, False,
+                   {"reconcile_during_call": during, "reconcile_after_lease": after_lease,
+                    "stalled_call": first, "retry": retry.code.value,
+                    "tool_executions": execs})
+
+
+def s_t23(dep: Deployment) -> Outcome:
+    """Audit finding 3: same seq, different payload."""
+    a = dep.agent_a()
+    _, d_a = dep.establish(a)
+    first = a.invoke(dep.g1, d_a, "pay-10")
+    other = a.invoke(dep.g1, d_a, "pay-1000", seq=1)
+    same = a.invoke(dep.g1, d_a, "pay-10", seq=1)
+    return Outcome("T23", dep.mode.name, other.code.value, False, None, not other.ok,
+                   {"first": first.code.value, "same_payload_retry": same.detail or same.code.value,
+                    "tool_executions": dep.b.tool.executions()})
+
+
 SCENARIOS: dict[str, Callable[[Deployment], Outcome]] = {
     "T01": s_t01, "T02": s_t02, "T03": s_t03, "T04": s_t04, "T05": s_t05, "T06": s_t06,
     "T07": s_t07, "T08": s_t08, "T09": s_t09, "T10": s_t10, "T11": s_t11, "T12": s_t12,
     "T12b": s_t12b, "T13": s_t13, "T14": s_t14, "T14b": s_t14b, "T15": s_t15, "T16": s_t16,
     "T16b": s_t16b, "T18": s_t18, "T19": s_t19, "T20": s_t20,
+    "T21": s_t21, "T22": s_t22, "T23": s_t23,
 }
 
 
@@ -520,7 +588,13 @@ def privacy_workload(dep: Deployment, n_dialogs: int) -> dict[str, list[str]]:
     for d in ids:
         a.resume(dep.g2, d)
         a.invoke(dep.g2, d, "post")
-    return {d: [d, dep.truth[d]] for d in ids}
+    out = {}
+    for d in ids:
+        vals = [d, dep.truth[d]]
+        if dep.mode.tickets:  # derived binding value travels only in this mode
+            vals.append(upstream_binding(d))
+        out[d] = vals
+    return out
 
 
 def analyze_privacy(dep: Deployment, dialogs: dict[str, list[str]]) -> dict[str, Any]:

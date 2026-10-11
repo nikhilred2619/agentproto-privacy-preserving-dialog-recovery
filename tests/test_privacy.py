@@ -99,3 +99,29 @@ def test_redaction_is_domain_keyed(make):
     _, gid = dep.establish(a)
     from agentproto_recovery.security import Redactor, new_key
     assert Redactor(new_key())(gid) != Redactor(new_key())(gid)
+
+
+# -- v0.2.0: ticket binding must not add new cross-domain linkage -------------
+
+def test_ticket_binding_reaches_only_gateways_and_b(make):
+    from agentproto_recovery.security import upstream_binding
+    dep = make("scoped-endpoint-ticket")
+    dialogs = privacy_workload(dep, N)
+    bindings = {upstream_binding(d) for d in dialogs}
+    holders = {e.domain for e in dep.obs.entries if e.value in bindings}
+    assert holders <= {"GW1", "GW2", "B"}
+    assert "A" not in holders                    # A never receives it on the wire
+    r = analyze_privacy(dep, dialogs)
+    # every pair that can see the binding could already join on dB or the ticket
+    assert r["identifier_join_fraction_by_domain_pair"]["B~GW1"] == 1.0
+
+
+def test_binding_not_used_outside_b_ticket_mode(make):
+    from agentproto_recovery.security import upstream_binding
+    for mode in ("scoped-store", "scoped-endpoint-medticket"):
+        dep = make(mode)
+        dialogs = privacy_workload(dep, 4)
+        bindings = {upstream_binding(d) for d in dialogs}
+        assert not [e for e in dep.obs.entries if e.value in bindings]
+        r = analyze_privacy(dep, dialogs)
+        assert r["endpoint_A_B_identifier_join"] == 0.0

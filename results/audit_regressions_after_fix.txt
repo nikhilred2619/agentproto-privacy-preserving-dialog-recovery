@@ -1,0 +1,7 @@
+# tests/test_audit_regressions.py after repair (v0.2.0), 2026-10-11T10:07:11Z
+PASSED tests/test_audit_regressions.py::test_ticket_of_other_dialog_is_rejected[scoped-endpoint-ticket]
+PASSED tests/test_audit_regressions.py::test_ticket_of_other_dialog_is_rejected[scoped-endpoint-medticket]
+PASSED tests/test_audit_regressions.py::test_reconcile_while_tool_call_in_flight_does_not_clear_pending
+PASSED tests/test_audit_regressions.py::test_late_tool_call_after_reconcile_is_fenced_not_duplicated
+PASSED tests/test_audit_regressions.py::test_duplicate_seq_with_different_payload_is_rejected[committed]
+PASSED tests/test_audit_regressions.py::test_duplicate_seq_with_different_payload_is_rejected[pending]

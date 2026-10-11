@@ -52,6 +52,24 @@ class RecordSigner:
         return hmac.compare_digest(self.tag(fields), tag or "")
 
 
+BINDING_LABEL = b"agentproto-recovery-upstream-binding-v1"
+
+
+def upstream_binding(upstream_id: str) -> str:
+    """Value that ties a B-sealed ticket to one upstream (Domain A) dialog
+    without telling Agent B the upstream identifier.
+
+    HMAC keyed with the upstream identifier itself: only parties that already
+    hold that identifier (Agent A and the gateways that carried the dialog)
+    can compute it. Agent B sees it only inside its own sealed ticket and in
+    the gateway's resumption request. It is constant per dialog, like dB, and
+    every party that can compute it could already join on the ticket bytes or
+    on dB, so it adds no new pairwise identifier join in this observer model
+    (checked in tests/test_privacy.py). It is NOT a secret from gateways.
+    """
+    return hmac.new(upstream_id.encode(), BINDING_LABEL, hashlib.sha256).hexdigest()
+
+
 class TicketInvalid(Exception):
     pass
 

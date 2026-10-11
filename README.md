@@ -37,10 +37,12 @@ what they cost.
   a global id, an opaque ticket sealed by the receiving agent, or a ticket
   sealed by a pre-arranged federation of gateways. Each of these moves
   linkability to some party; none removes it.
-* No configuration attached a resumption to the wrong dialog, or resumed a
-  revoked, expired, terminated, stale or wrong-principal dialog, across 1,620
-  fault-injected attempts. A deliberately guessing gateway (negative control)
-  did so 23 times in 270.
+* In v0.2.0, no configuration attached a resumption to the wrong dialog, or
+  resumed a revoked, expired, terminated, stale or wrong-principal dialog,
+  across 1,620 fault-injected attempts — for the faults in the schedule. A
+  deliberately guessing gateway (negative control) did so 13 times in 270.
+  v0.1.0 made the same claim, but an audit showed both ticket modes accepted
+  another dialog's ticket; that fault had not been tested (see below).
 * Gateways always link both sides, and event order alone linked the two
   endpoints in 100% of a sequential workload, whatever the identifiers.
 * Conclusion: the evidence does **not** show a missing use-case requirement.
@@ -48,6 +50,33 @@ what they cost.
   independently operated replacement mediator gets — that the protocol and
   architecture work will need to answer. Details:
   [docs/protocol_gap_analysis.md](docs/protocol_gap_analysis.md).
+
+## v0.2.0: audit repair
+
+An independent audit of v0.1.0 reported three defects. All three were
+reproduced against the v0.1.0 code before fixing, and the regression tests
+pass on v0.2.0 (`tests/test_audit_regressions.py`,
+`results/audit_regressions_before_fix.txt`,
+`results/audit_regressions_after_fix.txt`). The audit's own report and tests
+were not available; the regression tests were written from the defect
+descriptions.
+
+1. **Foreign ticket accepted (wrong dialog resumed).** Tickets are now bound
+   to the upstream dialog; mismatch returns `TICKET_MISMATCH`. B-sealed
+   tickets use a value derived from the upstream id, so B still never learns
+   it.
+2. **Reconciliation could clear an operation whose tool call was still
+   running**, which allowed a second execution. Operations now carry an
+   execution lease and incarnation; reconciliation fences the attempt at the
+   tool instead of deleting it.
+3. **A reused sequence number with a different payload was treated as a
+   duplicate.** B now stores a payload digest and returns
+   `SEQUENCE_CONFLICT`.
+
+Also corrected: GitHub PR #72 in the draft's repository was merged on
+2026-10-09 (v0.1.0 docs said it was still open). Details and what each fix
+does and does not cover: [docs/results.md](docs/results.md#audit-repair-v010--v020)
+and [CHANGELOG.md](CHANGELOG.md).
 
 ## What is implemented
 
@@ -100,7 +129,7 @@ pip install -e ".[test]"
 pytest
 ```
 
-Expected: `181 passed`. Each test builds its own deployment in a temporary
+Expected: `189 passed`. Each test builds its own deployment in a temporary
 directory; tests do not share state.
 
 ## Run the experiments
@@ -127,6 +156,7 @@ Benchmark only: `python experiments/benchmark.py`. `--help` lists the knobs
 | `results/benchmark_summary.json`, `.csv` | medians across runs, ratios vs baseline |
 | `results/environment_<cmd>.json` | Python, SQLite, platform, arguments, wall time |
 | `results/summary.md` | generated Markdown tables |
+| `results/audit_regressions_*.txt` | audit regression tests run before and after the v0.2.0 fixes |
 
 The committed `results/` are from the run described in
 [docs/results.md](docs/results.md).
@@ -164,6 +194,14 @@ Draft-ready note for the list:
   privacy guarantee is claimed.
 * A crash during establishment leaves an orphan dialog at Agent B; dialog
   lifetime/cleanup is not implemented.
+* Safe reconciliation of an unknown side effect assumes the external system
+  offers an atomic fence (or honours idempotency keys). The prototype's tool
+  was written to provide one; real tools may not.
+* The ticket binding stops substitution of another dialog's ticket, but a
+  compromised gateway can still mis-route, since it chooses which upstream id
+  to derive the binding from.
+* The fault schedule covers a fixed list of faults; v0.1.0 showed that a
+  clean result only covers what is in the list.
 * Latency numbers are dominated by SQLite fsync on the test machine and vary
   considerably between runs; they support only coarse comparisons.
 

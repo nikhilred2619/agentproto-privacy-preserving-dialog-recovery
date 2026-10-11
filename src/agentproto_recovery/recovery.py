@@ -10,8 +10,11 @@ or picking "the most likely" dialog (except the negative-control flag).
       store lacks it, recovery_source == "store"        -> MAPPING_NOT_FOUND
       store lacks it, recovery_source == "endpoint":
           global id     -> forward the id to B
-          scoped+B ticket        -> forward the B-sealed ticket to B
-          scoped+mediator ticket -> open it with the federation key
+          scoped+B ticket        -> forward the B-sealed ticket to B together
+                                    with upstream_binding(upstream_id); B
+                                    rejects a ticket bound to another dialog
+          scoped+mediator ticket -> open it with the federation key; reject
+                                    if it names another upstream dialog
           scoped only   -> MAPPING_NOT_FOUND
  3. principal binding                                   -> PRINCIPAL_MISMATCH
  4. lifecycle                                           -> DIALOG_TERMINATED
@@ -25,6 +28,7 @@ or picking "the most likely" dialog (except the negative-control flag).
 
 from __future__ import annotations
 
+import hmac
 import json
 from typing import TYPE_CHECKING
 
@@ -33,7 +37,7 @@ from .correlation import CorrelationRecord
 from .errors import Code, RecoveryError, StoreUnavailable, VersionConflict
 from .lifecycle import State
 from .messages import AuthContext, ResumeResult
-from .security import TicketInvalid
+from .security import TicketInvalid, upstream_binding
 
 if TYPE_CHECKING:  # pragma: no cover
     from .gateways import Gateway
@@ -72,6 +76,7 @@ def gateway_resume(gw: Gateway, ctx: AuthContext, upstream_id: str, epoch_seen: 
     claimed: CorrelationRecord | None = None
     ref: str | None
     tkt: str | None = None
+    binding: str | None = None
 
     if rec is not None:
         if rec.principal != ctx.principal:                 # step 3
@@ -107,6 +112,8 @@ def gateway_resume(gw: Gateway, ctx: AuthContext, upstream_id: str, epoch_seen: 
                 tp = gw.fed_sealer.open(ticket)
             except TicketInvalid as e:
                 raise RecoveryError(Code.TICKET_INVALID, str(e)) from e
+            if not hmac.compare_digest(str(tp.get("u", "")), upstream_id):
+                raise RecoveryError(Code.TICKET_MISMATCH, "ticket bound to another dialog")
             if tp["t"] != ctx.tenant:
                 raise RecoveryError(Code.TENANT_MISMATCH, "ticket")
             if tp["p"] != ctx.principal:
@@ -116,13 +123,16 @@ def gateway_resume(gw: Gateway, ctx: AuthContext, upstream_id: str, epoch_seen: 
             ref = tp["d"]
         elif ticket and gw.b.use_tickets:
             ref, tkt = None, ticket
+            binding = upstream_binding(upstream_id)
+            gw.obs.saw(gw.operator, "binding", binding)
         else:
             raise RecoveryError(Code.MAPPING_NOT_FOUND, "scoped id without mapping or ticket")
         require_authz(gw.authz, ctx, "resume")             # step 5
 
     try:                                                   # step 9
         gw.point("forward_resume")
-        d_b, res = gw.b.resume(ctx, epoch_seen, ref=ref, ticket=tkt, mediator=gw.name)
+        d_b, res = gw.b.resume(ctx, epoch_seen, ref=ref, ticket=tkt, mediator=gw.name,
+                               binding=binding)
     except DOWNSTREAM_FAULTS as e:
         if claimed:
             _release(gw, claimed, State.INTERRUPTED)
@@ -135,7 +145,7 @@ def gateway_resume(gw: Gateway, ctx: AuthContext, upstream_id: str, epoch_seen: 
 
     gw.obs.saw(gw.operator, "downstream_id", d_b)
     if gw.fed_sealer is not None:
-        res = ResumeResult(Code.OK, res.epoch, gw.fed_seal(d_b, ctx, res.epoch))
+        res = ResumeResult(Code.OK, res.epoch, gw.fed_seal(d_b, ctx, res.epoch, upstream_id))
     gw.obs.saw(gw.operator, "ticket", res.ticket)
     gw.point("before_finalize")
     result_json = json.dumps({"epoch": res.epoch, "ticket": res.ticket})

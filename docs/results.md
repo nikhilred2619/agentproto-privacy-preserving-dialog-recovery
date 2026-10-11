@@ -1,74 +1,104 @@
 # Results
 
-All numbers below come from one run of `agentproto-recovery all --out results`
-on 2026-10-11 (Python 3.13.16, SQLite 3.45.1, cryptography 50.0.1, Linux
-x86_64 container, 2 vCPU). Full tables: `results/summary.md` (generated);
-raw data: `results/*.json`, `results/*.csv`.
+Version 0.2.0. All numbers below come from one run of
+`agentproto-recovery all --out results` on 2026-10-11 (Python 3.13.16,
+SQLite 3.45.1, cryptography 50.0.1, Linux x86_64 container, 2 vCPU, wall
+time 90 s). Full tables: `results/summary.md` (generated); raw data:
+`results/*.json`, `results/*.csv`.
+
+Version 0.1.0 results were replaced, not merged. Section "Audit repair"
+lists what changed and why.
+
+## Audit repair (v0.1.0 → v0.2.0)
+
+An independent audit reported three defects in v0.1.0. The audit report and
+its own regression tests were not available to me; the regression tests in
+`tests/test_audit_regressions.py` were written from the defect descriptions
+in the repair request. Each was run against the v0.1.0 code **before** any
+fix and failed (`results/audit_regressions_before_fix.txt`, 6 of 6
+failing), then run again after the fix and passed
+(`results/audit_regressions_after_fix.txt`, 6 of 6 passing).
+
+| # | Defect in v0.1.0 | Reproduced on v0.1.0 | Fix in v0.2.0 | Evidence after fix |
+|---|---|---|---|---|
+| 1 | In both ticket modes a valid ticket belonging to dialog 2 was accepted when resuming dialog 1 (same principal, same epoch). B resumed dialog 2, and G2 then **persisted** the mapping dialog 1 → dialog 2's B-side dialog. | Yes, both modes (`OK`, wrong B dialog, wrong mapping stored) | Tickets are bound to the upstream dialog. Mediator tickets carry the upstream id (gateways already see it). B-sealed tickets carry `upstream_binding(dA)` = HMAC keyed with dA, so B never learns dA; the resuming gateway recomputes it from the dA presented and B rejects a mismatch with `TICKET_MISMATCH`. | T21 in the matrix; `test_ticket_of_other_dialog_is_rejected`; fault `foreign_ticket`: 0 incorrect associations |
+| 2 | `reconcile()` deleted a `PENDING` operation when the tool had no record yet, even while the tool call was still running. The running call then completed and a retry with the same seq executed it again. | Yes (`NOT_EXECUTED` while in flight; 2 executions after the late call) | `PENDING` rows record attempt number, executor incarnation and an execution lease. Reconcile returns `IN_PROGRESS` while the lease is live in the current incarnation. Otherwise it calls `fence(op_key)` on the tool, which atomically reports an execution that happened or makes sure a delayed call is refused. A retry starts a new attempt with a new key. | T22; `test_reconcile_while_tool_call_in_flight_does_not_clear_pending`, `test_late_tool_call_after_reconcile_is_fenced_not_duplicated`: exactly 1 execution |
+| 3 | A repeated seq with a **different** payload was answered as a duplicate (`deduplicated`, or `OUTCOME_UNKNOWN` for a pending one). | Yes | B stores a SHA-256 digest of the payload with each operation and returns `SEQUENCE_CONFLICT` on a mismatch, without executing. | T23; `test_duplicate_seq_with_different_payload_is_rejected` (committed and pending cases) |
+
+What the v0.1.0 documentation got wrong as a result:
+
+* It said no configuration attached a resumption to the wrong dialog across
+  1,620 fault-injected attempts. That was true for the faults tested, but the
+  fault set did not include presenting another dialog's ticket. The ticket
+  modes were not safe against it. v0.2.0 adds that fault (`foreign_ticket`).
+* It listed invariant I6 (no repeated side effect) as demonstrated. It was
+  demonstrated only for the crash cases tested, not for reconciliation racing
+  a live call, and dedup ignored the payload.
+
+Changes to existing tests: one test's **setup** changed because the `ops`
+table gained columns (`test_reconcile_when_tool_never_ran` inserts a row with
+the new columns); its assertions are unchanged. The other 180 v0.1.0 tests
+are unchanged and pass. Two test-side mistakes in my first draft of the
+regression tests were corrected before the final run (a clock step that also
+expired the authorization grant, and an import left unused); neither affects
+what is asserted.
 
 ## Test suite
 
-`pytest`: **181 passed** in about 11 s on Python 3.13. Repeated four more
-times on 3.13 (including twice from a fresh clone in a new virtualenv) and
-once each on Python 3.11 and 3.12, all with the same result. No flaky tests
-were observed. Test counts per file are visible with `pytest -v`.
+`pytest`: **189 passed** (181 from v0.1.0, 6 audit regression cases, 2 new
+privacy checks for the ticket binding). Results of runs on other Python
+versions are in the "Quality checks" section of the final report in
+`CHANGELOG.md`.
 
 ## E1 Scenario matrix
 
-134 cells (22 scenarios × 6 modes + 2 negative-control cells), 3 repeats each.
+152 cells (25 scenarios × 6 modes + 2 negative-control cells), 3 repeats each.
 
-* Every cell returned the same outcome on all 3 repeats
-  (`cells_with_nondeterministic_outcome: {}`).
-* Incorrect associations outside the negative control: **0**.
-  Negative control (T06, unsafe guess): **1** — the gateway resumed the
-  sibling dialog with a near-identical task.
-* Recoverable modes (`global-*`, `scoped-store`, both ticket modes) returned
-  `OK` for T03, T04, T14, T14b, T15, T16 and the expected explicit failure
-  code for T08-T13 and T19-T20.
-* `scoped-endpoint-noticket` returned `MAPPING_NOT_FOUND` for every scenario
-  that involved the replacement gateway.
-* `global-endpoint` was the only mode that recovered after all gateway-side
-  state was lost (T05, T06, T16b), because the identifier itself is the
-  recovery material.
-* T07: in both global modes the second tenant's establishment with the same
-  identifier string was refused (`INVALID_STATE`); in scoped modes both
-  tenants' dialogs were established and resumed correctly.
-* T12b: rolling back a validly tagged store row passed the integrity check and
-  was rejected as `STALE_REFERENCE`.
-* T14 / T14b: the external tool executed exactly once in every recoverable
-  mode; an unknown outcome came back as `OUTCOME_UNKNOWN` and was settled by
-  reconciliation without re-execution.
-* T18: in shared-store modes exactly one of two racing gateways succeeded
-  (`CONCURRENT_RECOVERY|OK`); with independent gateways both succeeded with
-  the same epoch and B advanced once.
+* Every cell returned the same outcome on all 3 repeats.
+* Incorrect associations outside the negative control: **0**. Negative
+  control (T06, unsafe guess): **1**.
+* T21 (foreign ticket): `TICKET_MISMATCH` in both ticket modes; in store and
+  global-endpoint modes the presented ticket is not used and the correct
+  dialog is resumed (`OK`, correct association); noticket fails as before.
+* T22: reconciliation during the tool call returns `IN_PROGRESS`; after the
+  lease expires it returns `NOT_EXECUTED`, the stalled call is refused at the
+  tool (`OPERATION_ABORTED`), the retry succeeds, 1 execution in total. Same
+  in every mode (this logic is local to Domain B).
+* T23: `SEQUENCE_CONFLICT` in every mode, 1 execution; the genuine retry is
+  still deduplicated.
+* T01-T20: same codes as v0.1.0 in every cell.
 
 ## E2 Seeded fault schedule
 
-3 seeds × 90 dialogs = 270 attempts per mode.
+3 seeds × 90 dialogs = 270 attempts per mode. The fault list gained
+`foreign_ticket`, so the per-seed draws differ from v0.1.0 and totals are not
+comparable line by line.
 
 | mode | recovered | explicit failures | incorrect assoc. | safety violations | recovery rate where permitted |
 |---|---|---|---|---|---|
-| global-store | 59 | 211 | 0 | 0 | 0.557 |
-| global-endpoint | 106 | 164 | 0 | 0 | 1.000 |
-| scoped-store | 59 | 211 | 0 | 0 | 0.557 |
+| global-store | 70 | 200 | 0 | 0 | 0.620 |
+| global-endpoint | 113 | 157 | 0 | 0 | 1.000 |
+| scoped-store | 70 | 200 | 0 | 0 | 0.620 |
 | scoped-endpoint-noticket | 0 | 270 | 0 | 0 | 0.000 |
-| scoped-endpoint-ticket | 79 | 191 | 0 | 0 | 0.745 |
-| scoped-endpoint-medticket | 79 | 191 | 0 | 0 | 0.745 |
-| scoped-store + unsafe guess | 75 | 195 | **23** | **23** | 0.708 |
+| scoped-endpoint-ticket | 67 | 203 | 0 | 0 | 0.593 |
+| scoped-endpoint-medticket | 67 | 203 | 0 | 0 | 0.593 |
+| scoped-store + unsafe guess | 78 | 192 | **13** | **13** | 0.690 |
 
-Reading this table: "recovery rate where permitted" counts the faults that
-should not by themselves forbid recovery (none, mapping_deleted,
-mapping_tampered, ticket_lost). Store modes lose mapping_deleted and
-mapping_tampered; ticket modes lose ticket_lost; `global-endpoint` loses none
-of them because its replacement gateway ignores the store and A never had a
-ticket to lose. The point of the table is the zero columns: across 1,620
-attempts in six modes no attempt resumed the wrong dialog or resumed a dialog
-that was revoked, expired, terminated, stale, or presented by another
-principal. The unsafe-guess control shows what happens without that
-discipline.
+`foreign_ticket` (24 attempts per mode): store and global-endpoint modes 24 OK
+(ticket ignored, correct dialog); ticket modes 21 `TICKET_MISMATCH` and 3
+`MAPPING_NOT_FOUND` (that user had no other dialog, so no ticket was
+presented). "Recovery rate where permitted" counts faults not in `MUST_FAIL`;
+ticket modes now lose `foreign_ticket` and `ticket_lost` there by design.
+
+Across 1,620 attempts in six modes, no attempt resumed the wrong dialog, and
+none resumed a dialog that was revoked, expired, terminated, stale, or
+presented by another principal — **for the faults in this list**. The list
+is not exhaustive; finding 1 is an example of a fault that was missing.
 
 ## E3 Privacy (T17)
 
-50 dialogs per mode, each resumed once through G2.
+50 dialogs per mode, each resumed once through G2. Unchanged from v0.1.0 in
+every metric.
 
 | mode | domains holding a common value (max) | A~B identifier join | GW1~GW2 join | distinct A-B shared values / dialog | gateway links both sides | order-based A~B join |
 |---|---|---|---|---|---|---|
@@ -79,20 +109,20 @@ discipline.
 | scoped-endpoint-ticket | 4 of 4 | 1.0 | 1.0 | 2 | 1.0 | 1.0 |
 | scoped-endpoint-medticket | 3 of 4 | 0.0 | 1.0 | 0 | 1.0 | 1.0 |
 
-What this shows:
+Effect of the ticket binding on linkability:
 
-* Scoped identifiers remove the identifier-equality join between the two
-  endpoints only when the recovery material never reaches both endpoints
-  (`scoped-store`, `scoped-endpoint-medticket`).
-* A ticket sealed by B and held by A is opaque to A but still a value both
-  endpoints hold. Colluding endpoints join on it exactly as they would on a
-  global id. The difference is lifetime: it changed on resumption (2 distinct
-  shared values per dialog) where a global id stays one value.
-* Every gateway that forwards a dialog can link both sides. Independent
-  gateway operators that hand a dialog over can join their logs in every
-  configuration that recovers.
-* With sequential establishment, event order alone links A and B in 100% of
-  dialogs in every mode. Opaque identifiers do not make dialogs unlinkable.
+* `scoped-endpoint-ticket`: the binding value is now included in the
+  analysis. It is observed by GW1, GW2 and B only, never sent to A
+  (`test_ticket_binding_reaches_only_gateways_and_b`). Every pair that sees it
+  could already join on dB or the ticket bytes, so no pairwise join fraction
+  changed. It is a deterministic function of dA, so anyone holding dA can
+  compute it; A could therefore recognise it if B showed it to A. A and B can
+  already join on the ticket in this mode, so this adds no new A~B linkage,
+  but it is one more A-derived value inside Domain B.
+* `scoped-endpoint-medticket`: the ticket now contains dA, encrypted under
+  the mediator federation key. Only gateways can open it, and they already see
+  dA. A~B join stays 0.0 (`test_binding_not_used_outside_b_ticket_mode`).
+* `scoped-store`: unaffected; no binding value is created.
 
 ## E4 Performance
 
@@ -101,35 +131,30 @@ per mode, after a discarded warm-up. Median across runs of per-run statistics.
 
 | mode | establish med (ms) | lookup med (ms) | recovery mean / med / p95 (ms) | concurrent recoveries/s | ratio vs baseline (recovery median) |
 |---|---|---|---|---|---|
-| global-store | 2.53 | 0.038 | 2.72 / 2.55 / 3.88 | 485 | baseline |
-| global-endpoint | 2.32 | 0.066 | 1.95 / 1.82 / 3.39 | 720 | baseline |
-| scoped-store | 2.40 | 0.054 | 2.51 / 2.30 / 4.11 | 569 | 0.90 vs global-store |
-| scoped-endpoint-ticket | 2.47 | 0.043 | 2.40 / 2.13 / 4.08 | 733 | 1.17 vs global-endpoint |
-| scoped-endpoint-medticket | 2.41 | 0.037 | 2.47 / 2.15 / 4.05 | 775 | 1.18 vs global-endpoint |
+| global-store | 2.42 | 0.038 | 2.77 / 2.46 / 4.58 | 539 | baseline |
+| global-endpoint | 2.26 | 0.037 | 2.34 / 2.06 / 3.52 | 794 | baseline |
+| scoped-store | 2.50 | 0.036 | 2.40 / 2.14 / 3.70 | 540 | 0.87 vs global-store |
+| scoped-endpoint-ticket | 2.54 | 0.052 | 2.40 / 2.37 / 3.23 | 680 | 1.15 vs global-endpoint |
+| scoped-endpoint-medticket | 2.44 | 0.036 | 2.73 / 2.38 / 3.70 | 710 | 1.16 vs global-endpoint |
 
-Store size after 400 dialogs: 400 rows in every mode; 98-131 KB depending on
-mode (`benchmark_summary.json`). Endpoint modes' G1 rows are smaller because
-`last_result` is empty until a resumption happens through that gateway.
-
-Interpretation, kept deliberately narrow:
+Interpretation, unchanged in substance from v0.1.0:
 
 * No incorrect associations and no non-OK recoveries in any benchmark run.
-* The scoped-vs-global ratios (0.90 and 1.17-1.18) are smaller than the
-  run-to-run spread of the same mode (e.g. `global-endpoint` per-run medians
-  ranged 1.67-2.95 ms). On this machine the measurement cannot distinguish
-  the cost of scoped identifiers from noise.
-* The visible structural difference is between store-based and
-  endpoint-based recovery: store-based recovery does two extra durable writes
-  (claim and finalize), which matches its higher median and lower concurrent
-  throughput. This was not isolated by a separate ablation.
-* Absolute latencies are dominated by SQLite commits with
-  `synchronous=FULL` on this container's filesystem and say nothing about a
-  networked deployment.
+* The ratios are inside the run-to-run spread of a single mode (per-run
+  recovery medians for `scoped-endpoint-ticket` ranged 1.91-3.61 ms). The
+  cost of scoped identifiers, and of the new binding check (one HMAC per
+  ticket resumption), cannot be distinguished from noise on this machine.
+* Store-based recovery does two extra durable writes (claim, finalize); that
+  remains the visible structural difference. Not isolated by ablation.
+* The benchmark does not exercise operations, so it measures nothing about
+  the new payload digest or fencing.
 
 ## Incomplete or not attempted
 
-* No real network transport (HTTP/QUIC); no multi-process or multi-host runs.
-* No ablation without the epoch field (F5 in the gap analysis is an
-  observation, not a measured failure).
-* Order-based linkage measured only for a sequential workload.
-* No protocol translation (B5-3) and no multi-hop chains beyond A → G → B.
+* The audit's own report and tests were not available; the regression tests
+  are reconstructions from the defect descriptions.
+* No real network transport, multi-process, or multi-host runs.
+* Fencing depends on the external system offering an atomic
+  check-and-fence; the prototype's tool was written to offer it.
+* No ablation without the epoch field; order-based linkage measured only for
+  a sequential workload; no protocol translation (B5-3).

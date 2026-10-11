@@ -31,8 +31,8 @@ from .evaluation import (MODES, SCENARIOS, Deployment, analyze_privacy, benchmar
                          dump_json, privacy_workload, run_scenario)
 from .security import new_identifier
 
-FAULTS = ["none", "mapping_deleted", "mapping_tampered", "ticket_lost", "revoked",
-          "expired", "terminated", "stale_replay", "wrong_principal"]
+FAULTS = ["none", "mapping_deleted", "mapping_tampered", "ticket_lost", "foreign_ticket",
+          "revoked", "expired", "terminated", "stale_replay", "wrong_principal"]
 MUST_FAIL = {"revoked", "expired", "terminated", "stale_replay", "wrong_principal"}
 
 
@@ -133,6 +133,12 @@ def _fault_run(mode: str, n: int, seed: int, unsafe: bool) -> list[dict[str, Any
             if fault == "wrong_principal":
                 _, e, t = a.state(d)
                 r = dep.g2.resume(mallory.ctx, d, e, new_identifier("rq"), t)
+            elif fault == "foreign_ticket":
+                # present a valid ticket of another dialog of the same user
+                others = [x for x in dialogs if x[2] is a and x[3] != d]
+                _, e, _ = a.state(d)
+                t = a.state(others[0][3])[2] if others else None
+                r = dep.g2.resume(a.ctx, d, e, new_identifier("rq"), t)
             else:
                 r = a.resume(dep.g2, d)
             correct = dep.resumed_correctly(d) if r.ok else None

@@ -33,7 +33,7 @@ from .errors import (Code, InjectedCrash, InjectedDrop, RecoveryError, StoreUnav
 from .failure_injection import FailureInjector, ManualClock
 from .lifecycle import State
 from .messages import AuthContext, OpResult, ResumeResult
-from .security import Redactor, TicketSealer
+from .security import Redactor, TicketSealer, upstream_binding
 
 T = TypeVar("T")
 DOWNSTREAM_FAULTS = (InjectedDrop, InjectedCrash, StoreUnavailable)
@@ -111,9 +111,13 @@ class Gateway:
             raise RecoveryError(Code.PRINCIPAL_MISMATCH)
         return rec
 
-    def fed_seal(self, d_b: str, ctx: AuthContext, epoch: int) -> str:
+    def fed_seal(self, d_b: str, ctx: AuthContext, epoch: int, upstream_id: str) -> str:
+        """Ticket for the mediator federation. Carries the upstream id so a
+        replacement gateway can check the ticket belongs to the dialog being
+        resumed; gateways already see that id, and A and B cannot open it."""
         assert self.fed_sealer is not None
-        return self.fed_sealer.seal({"d": d_b, "t": ctx.tenant, "p": ctx.principal, "e": epoch})
+        return self.fed_sealer.seal({"d": d_b, "u": upstream_id, "t": ctx.tenant,
+                                     "p": ctx.principal, "e": epoch})
 
     def mark_interrupted(self, rec: CorrelationRecord) -> None:
         try:
@@ -131,15 +135,19 @@ class Gateway:
             require_authz(self.authz, ctx, "delegate")
             self.obs.saw(self.operator, "upstream_id", upstream_id)
             self.point("before_forward")
+            # Bind B's ticket (if any) to this upstream dialog without
+            # revealing the upstream identifier to B.
+            binding = upstream_binding(upstream_id) if self.b.use_tickets else None
+            self.obs.saw(self.operator, "binding", binding)
             try:
                 self.point("forward_establish")
                 gid = upstream_id if self.cfg.id_scheme == "global" else None
-                d_b, ticket = self.b.establish(ctx, task, global_id=gid)
+                d_b, ticket = self.b.establish(ctx, task, global_id=gid, binding=binding)
             except DOWNSTREAM_FAULTS as e:
                 raise RecoveryError(Code.DOWNSTREAM_UNAVAILABLE, str(e)) from e
             self.obs.saw(self.operator, "downstream_id", d_b)
             if self.fed_sealer is not None:
-                ticket = self.fed_seal(d_b, ctx, 0)
+                ticket = self.fed_seal(d_b, ctx, 0, upstream_id)
             self.obs.saw(self.operator, "ticket", ticket)
             self.store.insert(
                 CorrelationRecord(ctx.tenant, upstream_id, ctx.principal, d_b, self.b.name,

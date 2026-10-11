@@ -17,8 +17,8 @@ identifier is visible to both endpoints? And what does G2 need to know?
 
 **Requirements examined.** B1-6 (persistent identifiers, resumption message),
 B1-7 (verify resuming party, termination, revocation; signal failure), B3-13
-(correlation across delegation hops; current text and the rewording in PR #72
-of the editors' repository), B5-2 (continuation through a different
+(correlation across delegation hops; added to the editors' repository by PR
+#72, merged 9 Oct 2026, wording as in -03), B5-2 (continuation through a different
 mediator), B5-3 (context across translation, not modelled), CMN-11, and
 Section 7 (persistent identifiers and linkability).
 
@@ -55,19 +55,29 @@ own identifier. G2 has no way to find B's dialog. Result: explicit
 3. In every configuration, mediators linked both sides of every dialog they
    carried, and event order alone linked A and B in all dialogs of a
    sequential workload.
-4. Across all configurations: no resumption attached to the wrong dialog,
-   and none succeeded when authorization was expired or revoked, the dialog
-   was terminated, the reference was stale, or another principal presented
-   it. A deliberately guessing mediator (negative control) produced 23 wrong
-   attachments in 270 attempts; the receiving agent could not detect guesses
-   that stayed within the same principal.
+4. Across all configurations, for the faults tested: no resumption attached
+   to the wrong dialog, and none succeeded when authorization was expired or
+   revoked, the dialog was terminated, the reference was stale, or another
+   principal presented it. A deliberately guessing mediator (negative
+   control) produced 13 wrong attachments in 270 attempts; the receiving agent
+   could not detect guesses that stayed within the same principal.
+   An independent audit of an earlier version (0.1.0) found that an authentic
+   ticket belonging to one dialog could resume a different dialog of the same
+   principal; the fault list had not covered that case. Fixing it required
+   binding the ticket to the dialog reference it is presented with; with
+   per-domain identifiers the binding has to be a value derived from the
+   upstream reference, so that the receiving domain can check it without
+   learning the reference.
 5. The prototype needed a per-dialog epoch in the resumption message to
    reject stale or rolled-back references. B1-7 names identity, termination
    and revocation but not staleness. (Not tested by ablation.)
 6. Duplicate side effects after a lost acknowledgment were avoided with a
-   per-dialog operation number and receiver-side bookkeeping. The draft has no
-   requirement here and the charter excludes tool-specific logic; this looks
-   like an implementation matter.
+   per-dialog operation number (bound to its payload) and receiver-side
+   bookkeeping; safe reconciliation of an unknown outcome needed the external
+   system to support fencing. The same audit found two local mistakes here
+   (reconciliation racing a live call; a reused number with a different
+   payload), both fixed. The draft has no requirement here and the charter
+   excludes tool-specific logic; this looks like an implementation matter.
 
 **Does this need standardization?** The evidence does not support a new
 use-case requirement. B1-6, B1-7, B5-2 and Section 7 already state the needed
@@ -103,15 +113,17 @@ that attack, no protocol translation, and no formal privacy property.
 ## Suggested next steps for external review
 
 1. Read `docs/protocol_gap_analysis.md` and check that the requirement
-   paraphrases still match the latest revision (PR #72 was open on
-   2026-10-11 and changes B3-13).
+   paraphrases still match the latest revision. PR #72 (which added B3-13)
+   was merged on 2026-10-09; the merged text matches -03. Re-check after any
+   later revision.
 2. Publish the repository (your decision) so the note can link to it.
 3. Ask one or two engineers outside the project to run `pytest` and
    `agentproto-recovery all` on a clean machine and report differences.
 4. Consider whether to post a short version of this note to the AgentProto
    list, or as a comment on issue #27 / PR #72 in the editors' repository,
    where the B3-13 discussion (local mapping vs. protocol) is directly
-   related to finding 1.
+   related to finding 1. PR #72 is already merged, so a new issue is probably
+   the more appropriate place than a comment on the closed PR.
 5. If people respond, the most useful follow-up experiments would be the
    epoch ablation, a concurrent-establishment version of the order attack, and
    a real HTTP binding.

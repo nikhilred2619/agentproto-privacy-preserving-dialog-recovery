@@ -16,6 +16,8 @@ class Code(str, Enum):
     MAPPING_NOT_FOUND = "MAPPING_NOT_FOUND"
     MAPPING_INTEGRITY_FAILURE = "MAPPING_INTEGRITY_FAILURE"
     TICKET_INVALID = "TICKET_INVALID"
+    # ticket is authentic but belongs to a different upstream dialog
+    TICKET_MISMATCH = "TICKET_MISMATCH"
     DIALOG_NOT_FOUND = "DIALOG_NOT_FOUND"
     # binding
     UNAUTHENTICATED = "UNAUTHENTICATED"
@@ -37,6 +39,10 @@ class Code(str, Enum):
     GATEWAY_DOWN = "GATEWAY_DOWN"
     # side effects
     OUTCOME_UNKNOWN = "OUTCOME_UNKNOWN"
+    # same (dialog, seq) presented with a different operation payload
+    SEQUENCE_CONFLICT = "SEQUENCE_CONFLICT"
+    # attempt was fenced by reconciliation; it did not and will not execute
+    OPERATION_ABORTED = "OPERATION_ABORTED"
 
 
 class RecoveryError(Exception):

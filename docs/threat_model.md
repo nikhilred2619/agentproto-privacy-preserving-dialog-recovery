@@ -45,6 +45,13 @@ in a deployment.
 * **M5 Confidential hops.** Each hop is assumed to be encrypted, so a passive
   network observer is out of scope. Without that, every identifier on the
   wire is visible to the path.
+* **M7 Fenceable tool.** The external system offers `fence(op_key)`: an
+  atomic "did this key execute? if not, refuse it from now on". Reconciliation
+  relies on it. A tool with neither fencing nor idempotency keys leaves
+  unknown outcomes for a human.
+* **M8 Execution lease.** The lease (30 s) is an estimate of how long a tool
+  call can take. Too short a lease aborts slow calls (they are fenced, never
+  duplicated); it does not break safety, because of M7.
 * **M6 One clock.** Leases and grant expiry use a single `ManualClock`. Clock
   skew between gateways is not modelled.
 
@@ -59,15 +66,22 @@ in a deployment.
 | Unauthorized resumption | Principal binding + separate authz at gateway and B | T09, T10, T11, T13 | Depends on M1/M2 |
 | Tampered mapping | HMAC-SHA256 tag over every column | T12, `test_corrupted_row_garbage` | An attacker with the HMAC key can forge rows (compromised operator) |
 | Tampered ticket | AES-GCM authentication | T12 (ticket modes) | Same, for key holders |
-| Compromised gateway guesses dialogs | Not mitigable by the gateway itself; B rejects principal/tenant/epoch mismatches | Negative control (T06 `+UNSAFE_GUESS`, fault schedule: 23 incorrect associations) | A compromised gateway that guesses *within the same principal* and with a correct epoch can mis-associate. B cannot tell. See gap analysis |
+| Ticket substitution (authentic ticket of another dialog, same principal) | Ticket bound to the upstream dialog: dA inside mediator tickets; `upstream_binding(dA)` inside B tickets, checked by B against the value the gateway derives from the presented dA | T21, fault `foreign_ticket` | **Present in v0.1.0** (wrong dialog resumed and wrong mapping persisted). A compromised gateway can still mis-route, because it chooses which dA to derive the binding from |
+| Reconciliation racing a live tool call | Lease + incarnation; fencing at the tool | T22, `test_late_tool_call_after_reconcile_is_fenced_not_duplicated` | **Present in v0.1.0** (duplicate execution). Relies on M7 |
+| Sequence number reused for a different operation | Payload digest per `(dialog, seq)` | T23 | **Present in v0.1.0** (silently deduplicated) |
+| Compromised gateway guesses dialogs | Not mitigable by the gateway itself; B rejects principal/tenant/epoch mismatches | Negative control (T06 `+UNSAFE_GUESS`, fault schedule: 13 incorrect associations in v0.2.0) | A compromised gateway that guesses *within the same principal* and with a correct epoch can mis-associate. B cannot tell. See gap analysis |
 | Identifier leakage in logs | Per-domain keyed redaction (`Redactor`) | `test_logs_contain_no_raw_identifiers`, `test_redaction_is_domain_keyed` | Only the prototype's own events are checked |
-| Metadata linkability | Scoped identifiers; rotating tickets | T17 (`privacy.json`) | Gateways always link both sides; event order links A and B in 100% of sequential dialogs in every mode; B-sealed tickets are a shared A-B value; operators of G1 and G2 can join on dA/dB/tickets |
+| Metadata linkability | Scoped identifiers; rotating tickets; ticket binding derived from dA so B does not learn dA | T17 (`privacy.json`), binding checks in `test_privacy.py` | Gateways always link both sides; event order links A and B in 100% of sequential dialogs in every mode; B-sealed tickets are a shared A-B value; operators of G1 and G2 can join on dA/dB/tickets |
 
-## Integrity vs. authorization vs. freshness
+## Integrity vs. binding vs. freshness vs. authorization
 
-The prototype keeps these apart and tests each separately:
+The prototype keeps these apart and tests each separately (four
+properties since v0.2.0):
 
 * *Integrity*: HMAC tag on store rows; AEAD on tickets. Detects modification.
+* *Binding*: which dialog a valid ticket belongs to. An authentic, fresh
+  ticket of another dialog is still the wrong ticket (T21). Checked
+  separately from integrity since v0.2.0.
 * *Freshness*: epoch / version comparisons. Detects old-but-valid material.
   T12b restores a validly tagged older row: integrity passes, freshness fails.
 * *Authorization validity*: `AuthorizationService.check`, called on every

@@ -43,8 +43,12 @@ def test_reconcile_when_tool_never_ran(make):
     a = dep.agent_a()
     _, d_a = dep.establish(a)
     d_b = dep.truth[d_a]
+    # v0.2.0: ops rows carry payload digest, attempt, executor incarnation and
+    # lease. Setup only; the assertions below are unchanged from v0.1.0.
+    from agentproto_recovery.agents import payload_digest
     with dep.b.db.tx() as c:
-        c.execute("INSERT INTO ops VALUES (?,?,?,NULL)", (d_b, 1, "PENDING"))
+        c.execute("INSERT INTO ops VALUES (?,?,?,NULL,?,?,?,?)",
+                  (d_b, 1, "PENDING", payload_digest("p"), 1, "inc_previous_process", 0.0))
     assert dep.b.op_status(a.ctx, d_b, 1).code is Code.OUTCOME_UNKNOWN
     assert dep.b.reconcile(d_b, 1) == "NOT_EXECUTED"
     assert a.invoke(dep.g1, d_a, "p", seq=1).status == "COMMITTED"

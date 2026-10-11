@@ -30,21 +30,26 @@ Oracle data is instrumentation. No component reads it.
 
 ## E1 Scenario matrix (`agentproto-recovery scenarios`)
 
-22 scripted scenarios (T01-T20 except T17, plus T12b, T14b, T16b) ×
-6 modes, plus 2 negative-control cells, each repeated 3 times in fresh
+25 scripted scenarios (T01-T20 except T17, plus T12b, T14b, T16b, and
+the audit scenarios T21 foreign ticket, T22 reconciliation during a live tool
+call, T23 reused sequence number with a different payload) × 6 modes, plus 2 negative-control cells, each repeated 3 times in fresh
 temporary directories. The same functions are used by pytest
 (`evaluation.SCENARIOS`). Output: `scenario_matrix.csv`,
 `scenario_summary.json`. Determinism check: for each cell the set of distinct
 `(code, correct_association, extra)` tuples across repeats must have size 1.
 
-T17 (privacy) is E3. T18 (concurrency) uses real threads and a barrier.
+T17 (privacy) is E3. T18 (concurrency) and T22 (blocked tool call) use real
+threads. T22 blocks the tool by wrapping `ExternalTool.execute` with an event
+wait (test instrumentation only).
 
 ## E2 Seeded fault schedule (`agentproto-recovery faults`)
 
 For each seed in {1, 2, 3} and each mode: 90 dialogs are established through
 G1 by 5 users with repetitive task text (`job-0` … `job-6`). Each dialog gets
 one fault drawn with `random.Random(seed)` from: none, mapping_deleted,
-mapping_tampered (pointed at another dialog's B id), ticket_lost, revoked,
+mapping_tampered (pointed at another dialog's B id), ticket_lost,
+foreign_ticket (added in v0.2.0: A presents a valid ticket of another dialog
+of the same user; ticket is `None` in modes without tickets), revoked,
 expired, terminated, stale_replay, wrong_principal. Revoked/expired dialogs
 get their own principal so the fault stays local. G1 is crashed, the clock
 advanced 120 s, faults applied, then every dialog is resumed through G2.
