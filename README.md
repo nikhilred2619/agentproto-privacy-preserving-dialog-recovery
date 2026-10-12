@@ -51,6 +51,50 @@ what they cost.
   architecture work will need to answer. Details:
   [docs/protocol_gap_analysis.md](docs/protocol_gap_analysis.md).
 
+## v0.2.2: Agent A process restart
+
+Scenario suggested by N. Templeman in the AgentProto discussion after he
+reviewed v0.2.1 (he has not reviewed v0.2.2): persist an operation as
+SENT, restart Agent A in a new OS process from its SQLite ledger before the
+acknowledgement is recorded, and let the original downstream execution finish
+late. On v0.2.1 this failed in all four tested modes (8 of 8 regression
+cases): the restarted agent resent the in-doubt operation when asked to retry
+it, and its ledger kept the operation SENT forever, even after the original
+execution had committed. v0.2.2:
+
+* marks SENT rows written by a dead Agent A process `IN_DOUBT` (identity,
+  payload, attempt and `next_seq` unchanged) and refuses to resend them;
+* adds `reconcile_ops()`, which asks Agent B for the authoritative outcome
+  (`gateway.resolve_op` → `AgentB.resolve`) and never submits an operation;
+  an outcome B cannot yet give stays explicitly unresolved;
+* lets B answer NOT_EXECUTED only after fencing every attempt Agent A knows
+  about, so a late copy of the original request cannot execute afterwards;
+  a retry is an explicit `retry_op()` with the same seq and payload and a new
+  attempt number.
+
+This project's own pre-publication technical audit of the first v0.2.2
+draft found three issues, now
+corrected (72 new test cases, 44 of which failed on the draft): `invoke`
+could bypass `retry_op()` and `retry_op()`'s state check was not atomic;
+`resolve` could fence or abort attempts without checking authorization; and
+some descriptions implied a real Agent B process restart where the tests only
+simulate one. See [docs/results.md](docs/results.md#v022-pre-publication-technical-audit).
+
+Results: the regression and 66 acceptance cases pass; the full suite is 379
+passed on Python 3.11, 3.12 and 3.13; experiment outputs re-run unchanged.
+Safe reconciliation still rests on the external tool's atomic fence (or an
+honoured idempotency key), assumption M7. See
+[docs/results.md](docs/results.md#agent-a-process-restart-v021--v022).
+
+What this does and does not show. The restart tests use real, separate OS
+processes on one host: Agent A is SIGKILLed and a new Agent A process reopens
+the same SQLite files, while a separate downstream process (gateways, Agent B,
+external tool) keeps running. They do not cover multi-host operation, real
+network protocols (the processes talk over a local Unix socket with Python's
+`multiprocessing.connection`), clock skew, cross-operator authentication, or
+interoperability with any AgentProto specification; none exists yet and none
+is claimed.
+
 ## v0.2.1: client ledger integrity
 
 A second audit found that Agent A's local operation ledger could overwrite a
@@ -140,7 +184,7 @@ pip install -e ".[test]"
 pytest
 ```
 
-Expected: `233 passed`. Each test builds its own deployment in a temporary
+Expected: `379 passed` (about 40 s; 74 of these start real OS processes). Each test builds its own deployment in a temporary
 directory; tests do not share state.
 
 ## Run the experiments
@@ -170,6 +214,11 @@ Benchmark only: `python experiments/benchmark.py`. `--help` lists the knobs
 | `results/audit_regressions_*.txt` | audit regression tests run before and after the v0.2.0 fixes |
 | `results/ledger_integrity_*.txt` | ledger-integrity tests run on v0.2.0 (before) and v0.2.1 (after) |
 | `results/v0.2.1_rerun_check.txt` | evidence that v0.2.1 reproduces the committed experiment outputs exactly |
+| `results/process_restart_before_fix.txt` | restart regression tests on unmodified v0.2.1 (8 failed) |
+| `results/process_restart_after_fix.txt` | restart regression and acceptance tests on v0.2.2 (74 passed) |
+| `results/v0.2.2_review_before_fix.txt` | technical-audit tests (`test_review_v022.py`) on the first v0.2.2 draft (44 failed, 28 passed) |
+| `results/v0.2.2_review_after_fix.txt` | technical-audit tests after the corrections (72 passed) |
+| `results/v0.2.2_rerun_check.txt` | evidence that v0.2.2 reproduces the committed experiment outputs exactly |
 
 The committed `results/` are from the run described in
 [docs/results.md](docs/results.md).
@@ -197,8 +246,10 @@ Draft-ready note for the list:
 
 ## Limitations
 
-* Single process; components call each other directly. No HTTP/QUIC binding,
-  no real network partitions, no multi-host concurrency.
+* The core experiments run in a single process; components call each other
+  directly. The v0.2.2 restart tests use separate OS processes on one host
+  over a local Unix socket. No HTTP/QUIC binding, no real network partitions,
+  no multi-host concurrency.
 * Authentication is mocked (the principal is taken as given); Agent B trusts
   the principal relayed by the gateway; one shared mock authorization
   service; one shared clock. See [docs/threat_model.md](docs/threat_model.md).
@@ -213,9 +264,20 @@ Draft-ready note for the list:
 * The ticket binding stops substitution of another dialog's ticket, but a
   compromised gateway can still mis-route, since it chooses which upstream id
   to derive the binding from.
-* Agent A has no crash/restart model: a crash between dispatch and recording
-  leaves a SENT row that `settle_unknown_ops` (which only resends UNKNOWN)
-  will not retry automatically.
+* Agent A restart recovery (v0.2.2) assumes one live Agent A process per
+  ledger file (M9): a SENT row stamped by another process incarnation is
+  treated as orphaned. Nothing enforces this; a supervisor must make sure the
+  old process is dead before the new one starts.
+* Agent B restarts are simulated in the same OS process (a new incarnation
+  id while the old executor thread keeps running). Only Agent A restarts are
+  real process restarts in the tests.
+* Outcome discovery through `resolve` needs only authentication and principal
+  binding; aborting or fencing needs a current `invoke` grant. Without one,
+  an in-doubt operation stays unresolved and may still complete, once.
+* An operation stays explicitly unresolved (IN_DOUBT) for as long as Agent B
+  cannot be reached through some gateway that holds the dialog's mapping. In
+  `scoped-endpoint-noticket`, if the gateway that carried the operation is
+  also gone, that is permanent.
 * The fault schedule covers a fixed list of faults; v0.1.0 showed that a
   clean result only covers what is in the list.
 * Latency numbers are dominated by SQLite fsync on the test machine and vary

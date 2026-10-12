@@ -158,7 +158,8 @@ class Gateway:
             return Code.OK, ticket
         return self._run("establish", body, lambda c, d: (c, None))
 
-    def invoke(self, ctx: AuthContext, upstream_id: str, seq: int, payload: str) -> OpResult:
+    def invoke(self, ctx: AuthContext, upstream_id: str, seq: int, payload: str,
+               attempt: int | None = None) -> OpResult:
         def body() -> OpResult:
             rec = self.lookup(ctx, upstream_id)
             if rec.state == State.TERMINATED.value:
@@ -168,7 +169,8 @@ class Gateway:
             self.point("before_forward")  # gateway-level crash point
             try:
                 self.point("forward_invoke")  # message-loss point
-                res = self.b.invoke(ctx, rec.downstream_id, seq, payload)
+                res = self.b.invoke(ctx, rec.downstream_id, seq, payload,
+                                    client_attempt=attempt)
             except DOWNSTREAM_FAULTS as e:
                 self.mark_interrupted(rec)
                 raise RecoveryError(Code.DOWNSTREAM_UNAVAILABLE, str(e)) from e
@@ -180,6 +182,23 @@ class Gateway:
             rec = self.lookup(ctx, upstream_id)
             return self.b.op_status(ctx, rec.downstream_id, seq)
         return self._run("op_status", body, lambda c, d: OpResult(c, detail=d))
+
+    def resolve_op(self, ctx: AuthContext, upstream_id: str, seq: int, payload: str,
+                   attempt: int) -> OpResult:
+        """Ask Agent B for the authoritative outcome of one operation (see
+        AgentB.resolve). Never forwards an invocation. The gateway checks
+        authentication and the principal binding of the mapping; Agent B
+        decides authorization: reading an existing outcome needs none, any
+        fence or abort needs a current "invoke" grant. Allowed in any dialog
+        state."""
+        def body() -> OpResult:
+            rec = self.lookup(ctx, upstream_id)
+            try:
+                self.point("forward_resolve")
+                return self.b.resolve(ctx, rec.downstream_id, seq, payload, attempt)
+            except DOWNSTREAM_FAULTS as e:
+                raise RecoveryError(Code.DOWNSTREAM_UNAVAILABLE, str(e)) from e
+        return self._run("resolve_op", body, lambda c, d: OpResult(c, detail=d))
 
     def resume(self, ctx: AuthContext, upstream_id: str, epoch_seen: int, request_id: str,
                ticket: str | None) -> ResumeResult:

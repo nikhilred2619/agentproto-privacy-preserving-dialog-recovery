@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS ops (
 CREATE TABLE IF NOT EXISTS resume_log (
     dialog_id TEXT NOT NULL, from_epoch INTEGER NOT NULL, new_epoch INTEGER NOT NULL,
     ticket TEXT, mediator TEXT, PRIMARY KEY (dialog_id, from_epoch));
+CREATE TABLE IF NOT EXISTS op_fences (
+    dialog_id TEXT NOT NULL, seq INTEGER NOT NULL, fenced_through INTEGER NOT NULL,
+    PRIMARY KEY (dialog_id, seq));
 """
 
 TOOL_SCHEMA = """
@@ -154,7 +157,11 @@ class AgentB:
         self.oracle_established: list[str] = []
 
     def restart(self) -> None:
-        """Simulated process restart: in-flight work of the old incarnation is gone."""
+        """Simulated restart: gives this AgentB object a new incarnation id, as
+        a restarted process would have. It does not start a new OS process
+        and does not stop threads of the old incarnation; a call already
+        inside the tool keeps running (which is how the tests model an
+        executor that outlives a B restart)."""
         self.incarnation = new_identifier("inc")
 
     # -- helpers -----------------------------------------------------------
@@ -264,7 +271,13 @@ class AgentB:
                          epoch=new_epoch, idempotent_replay=replay)
         return d.dialog_id, ResumeResult(Code.OK, new_epoch, tkt)
 
-    def invoke(self, ctx: AuthContext, ref: str, seq: int, payload: str) -> OpResult:
+    def invoke(self, ctx: AuthContext, ref: str, seq: int, payload: str,
+               client_attempt: int | None = None) -> OpResult:
+        """`client_attempt` is Agent A's attempt number for this (dialog, seq).
+        Once reconciliation has fenced attempts up to k (see resolve()), a
+        request carrying attempt <= k, or no attempt at all, is refused
+        without executing. It is how a late-arriving copy of an attempt that
+        reconciliation declared NOT_EXECUTED is kept from executing after all."""
         d, _ = self._resolve(ctx, ref, None)
         if d.state == State.TERMINATED.value:
             raise RecoveryError(Code.DIALOG_TERMINATED)
@@ -280,6 +293,14 @@ class AgentB:
                                     "sequence number already used for a different operation")
                 if row["state"] == "COMMITTED":
                     return OpResult(Code.OK, "COMMITTED", row["result"], "deduplicated")
+            fence = c.execute("SELECT fenced_through FROM op_fences WHERE dialog_id=? AND seq=?",
+                              (d.dialog_id, seq)).fetchone()
+            if fence is not None and (client_attempt is None
+                                      or client_attempt <= fence["fenced_through"]):
+                return OpResult(Code.OPERATION_ABORTED, "NOT_EXECUTED", None,
+                                f"attempt fenced by reconciliation (through "
+                                f"{fence['fenced_through']}); retry with a newer attempt")
+            if row is not None:
                 if row["state"] == "PENDING":
                     live = (row["incarnation"] == self.incarnation and row["lease_until"] > now)
                     return OpResult(Code.OUTCOME_UNKNOWN, "PENDING", None,
@@ -327,6 +348,125 @@ class AgentB:
             return OpResult(Code.OK, "NOT_EXECUTED")
         return OpResult(Code.OUTCOME_UNKNOWN, "PENDING")
 
+    def _fence(self, c, dialog_id: str, seq: int, client_attempt: int) -> None:
+        c.execute("INSERT INTO op_fences VALUES (?,?,?) ON CONFLICT(dialog_id, seq) DO UPDATE "
+                  "SET fenced_through=MAX(fenced_through, excluded.fenced_through)",
+                  (dialog_id, seq, client_attempt))
+
+    def resolve(self, ctx: AuthContext, ref: str, seq: int, payload: str,
+                client_attempt: int) -> OpResult:
+        """Authoritative answer for one logical operation, asked by an Agent A
+        that does not know what happened (e.g. after its process restarted).
+
+        The answer is bound to the operation's payload digest, not just
+        (dialog, seq). It never executes anything. Possible answers:
+
+        * COMMITTED (code OK, with result): the operation executed exactly once.
+        * NOT_EXECUTED (code OK): it has not executed and, for every Agent A
+          attempt <= client_attempt, never will: those attempts are fenced
+          here and, if B had already started one, at the external tool.
+        * IN_PROGRESS (code OUTCOME_UNKNOWN): B's executor may still be running
+          (live lease in this incarnation). Nothing is decided; ask again.
+        * CONFLICT (code SEQUENCE_CONFLICT): B holds a different payload.
+
+        Authorization policy (v0.2.2 pre-publication technical audit):
+        * Every call needs an authenticated caller bound to the dialog's
+          principal and tenant. A correlation reference alone is never enough.
+        * Reading an outcome that already exists (COMMITTED, CONFLICT,
+          IN_PROGRESS, NOT_EXECUTED already fenced through this attempt) needs
+          no further authorization: it is not a new action, and blocking it
+          would leave the caller unable to learn what happened.
+        * Anything that aborts an attempt (recording NOT_EXECUTED for an
+          operation B never saw, raising a fence, fencing a started attempt
+          at the tool) is a new action and needs a current "invoke" grant.
+          Revoked, expired or unavailable authorization means nothing is
+          written and the caller stays unresolved.
+        * Allowed in any dialog state, including TERMINATED.
+
+        Relies on assumption M7 (the external tool can fence a key atomically).
+        """
+        if not ctx.authenticated:
+            raise RecoveryError(Code.UNAUTHENTICATED)
+        d, _ = self._resolve(ctx, ref, None)
+        digest = payload_digest(payload)
+        for _ in range(3):
+            answer, action = self._resolve_observe(d.dialog_id, seq, digest, client_attempt)
+            if answer is not None:
+                return answer
+            if action != "settle_executed":
+                require_authz(self.authz, ctx, "invoke")
+            answer = self._resolve_act(d.dialog_id, seq, digest, client_attempt, action)
+            if answer is not None:
+                return answer
+            # state changed between observing and acting; observe again
+        return OpResult(Code.OUTCOME_UNKNOWN, "IN_PROGRESS", None,
+                        "state changed concurrently; ask again")
+
+    def _resolve_observe(self, dialog_id: str, seq: int, digest: str, client_attempt: int
+                         ) -> tuple[OpResult | None, str | None]:
+        """Read-only. Returns (answer, None) or (None, action needed)."""
+        rows = self.db.query("SELECT * FROM ops WHERE dialog_id=? AND seq=?", (dialog_id, seq))
+        if not rows:
+            return None, "fence_unseen"
+        row = rows[0]
+        if not hmac.compare_digest(row["payload_digest"], digest):
+            return OpResult(Code.SEQUENCE_CONFLICT, "CONFLICT", None,
+                            "B holds a different payload for this sequence number"), None
+        if row["state"] == "COMMITTED":
+            return OpResult(Code.OK, "COMMITTED", row["result"]), None
+        if row["state"] == "NOT_EXECUTED":
+            f = self.db.query("SELECT fenced_through FROM op_fences WHERE dialog_id=? AND seq=?",
+                              (dialog_id, seq))
+            if f and f[0]["fenced_through"] >= client_attempt:
+                return OpResult(Code.OK, "NOT_EXECUTED", None, "fenced"), None
+            return None, "raise_fence"
+        if row["incarnation"] == self.incarnation and row["lease_until"] > self.clock.now():
+            return OpResult(Code.OUTCOME_UNKNOWN, "IN_PROGRESS", None,
+                            "executor may still be running"), None
+        # PENDING from an earlier incarnation or with an expired lease. If the
+        # tool already executed it, settling it only records a fact.
+        if self.tool.lookup(f"{dialog_id}:{seq}:{row['attempt']}") is not None:
+            return None, "settle_executed"
+        return None, "fence_started"
+
+    def _resolve_act(self, dialog_id: str, seq: int, digest: str, client_attempt: int,
+                     action: str | None) -> OpResult | None:
+        """Re-validates the observed state inside a transaction before writing;
+        returns None if it changed (the caller observes again)."""
+        if action == "fence_unseen":
+            with self.db.tx() as c:
+                if c.execute("SELECT 1 FROM ops WHERE dialog_id=? AND seq=?",
+                             (dialog_id, seq)).fetchone():
+                    return None
+                # Never reached B. Record that it did not execute and fence the
+                # attempts the caller knows about, so a request still in flight
+                # (between Agent A and B) is refused when it arrives.
+                c.execute("INSERT INTO ops VALUES (?,?,?,?,?,?,?,?)",
+                          (dialog_id, seq, "NOT_EXECUTED", None, digest, 0, self.incarnation, 0.0))
+                self._fence(c, dialog_id, seq, client_attempt)
+            return OpResult(Code.OK, "NOT_EXECUTED", None, "no record at B; fenced")
+        if action == "raise_fence":
+            with self.db.tx() as c:
+                row = c.execute("SELECT state, payload_digest FROM ops WHERE dialog_id=? AND seq=?",
+                                (dialog_id, seq)).fetchone()
+                if row is None or row["state"] != "NOT_EXECUTED" or \
+                        not hmac.compare_digest(row["payload_digest"], digest):
+                    return None
+                self._fence(c, dialog_id, seq, client_attempt)
+            return OpResult(Code.OK, "NOT_EXECUTED", None, "fenced")
+        # settle_executed / fence_started: settle at the tool (atomic fence),
+        # never by re-executing.
+        verdict = self.reconcile(dialog_id, seq)
+        with self.db.tx() as c:
+            row = c.execute("SELECT state, result FROM ops WHERE dialog_id=? AND seq=?",
+                            (dialog_id, seq)).fetchone()
+            if row["state"] == "COMMITTED":
+                return OpResult(Code.OK, "COMMITTED", row["result"])
+            if row["state"] == "NOT_EXECUTED" and action == "fence_started":
+                self._fence(c, dialog_id, seq, client_attempt)
+                return OpResult(Code.OK, "NOT_EXECUTED", None, "fenced at tool")
+        return OpResult(Code.OUTCOME_UNKNOWN, "IN_PROGRESS", None, f"reconcile: {verdict}")
+
     def reconcile(self, dialog_id: str, seq: int) -> str:
         """Local operator action in Domain B: settle a PENDING operation by
         asking the external system, never by re-executing.
@@ -373,7 +513,7 @@ CREATE TABLE IF NOT EXISTS dialogs (
 CREATE TABLE IF NOT EXISTS ops (
     dialog_id TEXT NOT NULL, seq INTEGER NOT NULL, payload TEXT NOT NULL,
     state TEXT NOT NULL, result TEXT, attempt INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (dialog_id, seq));
+    owner TEXT, PRIMARY KEY (dialog_id, seq));
 """
 
 # Agent A's local operation ledger (see docs/architecture.md, "Agent A
@@ -381,14 +521,23 @@ CREATE TABLE IF NOT EXISTS ops (
 # changes after insertion. COMMITTED is terminal: its state, payload and
 # result never change. Every other state can be retried with the SAME payload.
 #
-#   (none) --reserve--> SENT
-#   SENT / UNKNOWN / NEEDS_RECONCILIATION / FAILED / CONFLICT
-#          --retry (same payload, attempt+1)--> SENT
+#   (none) --reserve--> SENT (owner = this process's incarnation)
+#   SENT (this process) / UNKNOWN / NEEDS_RECONCILIATION / FAILED
+#          --invoke(seq) retry (same payload, attempt+1)--> SENT
+#   NOT_EXECUTED --retry_op() only (atomic state check, attempt+1)--> SENT
+#   CONFLICT --anything--> CONFLICT (B holds another payload; never resent)
 #   SENT   --OK (from any attempt)----------------------------> COMMITTED
 #   SENT   --non-OK response of the CURRENT attempt----------> UNKNOWN |
 #                                   NEEDS_RECONCILIATION | FAILED | CONFLICT
+#   SENT owned by another (dead) incarnation --recover-------> IN_DOUBT    (v0.2.2)
+#   IN_DOUBT / UNKNOWN / NEEDS_RECONCILIATION --reconcile, B says:
+#          COMMITTED -> COMMITTED; NOT_EXECUTED (fenced) -> NOT_EXECUTED;
+#          CONFLICT -> CONFLICT; in progress / unreachable -> unchanged
+#   IN_DOUBT --invoke/retry--> refused locally (OUTCOME_UNKNOWN), nothing sent
 #   COMMITTED --anything-------------------------------------> COMMITTED
-OP_STATES = ("SENT", "UNKNOWN", "NEEDS_RECONCILIATION", "FAILED", "CONFLICT", "COMMITTED")
+OP_STATES = ("SENT", "IN_DOUBT", "UNKNOWN", "NEEDS_RECONCILIATION", "FAILED", "CONFLICT",
+             "NOT_EXECUTED", "COMMITTED")
+UNRESOLVED_STATES = ("IN_DOUBT", "UNKNOWN", "NEEDS_RECONCILIATION")
 
 RETRYABLE = {Code.GATEWAY_DOWN, Code.DOWNSTREAM_UNAVAILABLE, Code.STORE_UNAVAILABLE,
              Code.AUTHZ_UNAVAILABLE, Code.CONCURRENT_RECOVERY}
@@ -405,6 +554,13 @@ class AgentA:
         self.obs = obs
         self.id_scheme = id_scheme
         self.db = Database(Path(workdir) / f"domain_a_{name}.sqlite", f"a_{name}", None, A_SCHEMA)
+        cols = {r["name"] for r in self.db.query("PRAGMA table_info(ops)")}
+        if "owner" not in cols:  # ledger written by v0.2.1 or earlier
+            self.db.conn().execute("ALTER TABLE ops ADD COLUMN owner TEXT")
+        # Identifies this Agent A process. A SENT row stamped with any other
+        # value was written by an incarnation that no longer exists (single
+        # live Agent A process per ledger file: assumption M9).
+        self.incarnation = new_identifier("ainc")
         self.events = EventEmitter("agent_a", self.DOMAIN, Redactor(new_key()))
 
     def _row(self, dialog_id: str):
@@ -442,35 +598,69 @@ class AgentA:
         it. This covers an Agent A that lost its ledger and retries what it
         believes it sent; Agent B's payload digest still rejects a mismatch.
         """
-        reserved = self._reserve(dialog_id, payload, seq)
+        return self._dispatch(gw, dialog_id, self._reserve(dialog_id, payload, seq))
+
+    def _dispatch(self, gw: Gateway, dialog_id: str,
+                  reserved: tuple[int, int, str] | OpResult) -> OpResult:
         if isinstance(reserved, OpResult):
             return reserved  # answered from the local ledger; nothing dispatched
-        seq, attempt = reserved
-        res = gw.invoke(self.ctx, dialog_id, seq, payload)
+        seq, attempt, payload = reserved
+        res = gw.invoke(self.ctx, dialog_id, seq, payload, attempt=attempt)
         self._record(dialog_id, seq, attempt, res)
         return res
 
-    def _reserve(self, dialog_id: str, payload: str, seq: int | None
-                 ) -> tuple[int, int] | OpResult:
+    def _reserve(self, dialog_id: str, payload: str | None, seq: int | None,
+                 retry_not_executed: bool = False) -> tuple[int, int, str] | OpResult:
+        """One transaction decides whether this request may be dispatched.
+
+        Resend policy for an existing row with the same payload (v0.2.2):
+          COMMITTED            answered from the ledger, never resent
+          IN_DOUBT / SENT of a dead process   refused (reconcile first)
+          CONFLICT             refused: B holds another payload for this seq,
+                               which is permanent, so a resend cannot succeed
+          NOT_EXECUTED         only via retry_op() (retry_not_executed=True)
+          UNKNOWN              resent: transport failure seen by this process;
+                               B deduplicates on (dialog, seq, digest) and
+                               refuses fenced attempts
+          NEEDS_RECONCILIATION resent: B answered "PENDING"; a resend is
+                               answered from B's ledger or refused, unless B
+                               has since established NOT_EXECUTED, in which
+                               case it executes once
+          FAILED               resent: recorded only for rejections before B
+                               writes or executes anything
+          SENT of this process resent (concurrent in-process retry); B
+                               deduplicates
+        """
         with self.db.tx() as c:
             d = c.execute("SELECT next_seq FROM dialogs WHERE dialog_id=?",
                           (dialog_id,)).fetchone()
             if d is None:
                 return OpResult(Code.DIALOG_NOT_FOUND)
             if seq is None:
+                assert payload is not None and not retry_not_executed
                 seq = d["next_seq"]
-                c.execute("INSERT INTO ops VALUES (?,?,?,?,NULL,1)",
-                          (dialog_id, seq, payload, "SENT"))
+                c.execute("INSERT INTO ops (dialog_id, seq, payload, state, result, attempt, "
+                          "owner) VALUES (?,?,?,'SENT',NULL,1,?)",
+                          (dialog_id, seq, payload, self.incarnation))
                 c.execute("UPDATE dialogs SET next_seq=? WHERE dialog_id=?", (seq + 1, dialog_id))
-                return seq, 1
-            row = c.execute("SELECT payload, state, result, attempt FROM ops "
+                return seq, 1, payload
+            row = c.execute("SELECT payload, state, result, attempt, owner FROM ops "
                             "WHERE dialog_id=? AND seq=?", (dialog_id, seq)).fetchone()
+            if retry_not_executed:
+                # retry_op(): the state check and the reservation are one
+                # transaction, so two concurrent retries cannot both dispatch.
+                if row is None or row["state"] != "NOT_EXECUTED":
+                    return OpResult(Code.INVALID_STATE, row["state"] if row else "", None,
+                                    "retry_op requires a reconciled NOT_EXECUTED operation")
+                payload = row["payload"]
+            assert payload is not None
             if row is None:  # adoption, see docstring of invoke()
-                c.execute("INSERT INTO ops VALUES (?,?,?,?,NULL,1)",
-                          (dialog_id, seq, payload, "SENT"))
+                c.execute("INSERT INTO ops (dialog_id, seq, payload, state, result, attempt, "
+                          "owner) VALUES (?,?,?,'SENT',NULL,1,?)",
+                          (dialog_id, seq, payload, self.incarnation))
                 c.execute("UPDATE dialogs SET next_seq=MAX(next_seq, ?) WHERE dialog_id=?",
                           (seq + 1, dialog_id))
-                return seq, 1
+                return seq, 1, payload
             if not hmac.compare_digest(row["payload"].encode(), payload.encode()):
                 # Checked before any dispatch; the existing row is not touched.
                 return OpResult(Code.SEQUENCE_CONFLICT, row["state"], None,
@@ -478,11 +668,29 @@ class AgentA:
                                 "different payload")
             if row["state"] == "COMMITTED":
                 return OpResult(Code.OK, "COMMITTED", row["result"], "deduplicated")
+            orphan = row["state"] == "SENT" and row["owner"] != self.incarnation
+            if row["state"] == "IN_DOUBT" or orphan:
+                # Sent by an Agent A process that no longer exists; its outcome
+                # is unknown. Not a licence to resend: reconcile_ops() first.
+                if orphan:
+                    c.execute("UPDATE ops SET state='IN_DOUBT' WHERE dialog_id=? AND seq=? "
+                              "AND state='SENT' AND attempt=?", (dialog_id, seq, row["attempt"]))
+                return OpResult(Code.OUTCOME_UNKNOWN, "IN_DOUBT", None,
+                                "outcome of an attempt sent before a restart is unknown; "
+                                "reconcile before retrying")
+            if row["state"] == "CONFLICT":
+                return OpResult(Code.SEQUENCE_CONFLICT, "CONFLICT", None,
+                                "Agent B holds a different payload for this sequence number; "
+                                "not resent")
+            if row["state"] == "NOT_EXECUTED" and not retry_not_executed:
+                return OpResult(Code.INVALID_STATE, "NOT_EXECUTED", None,
+                                "proven NOT_EXECUTED by reconciliation; retry only through "
+                                "retry_op()")
             attempt = row["attempt"] + 1
-            c.execute("UPDATE ops SET state='SENT', attempt=? WHERE dialog_id=? AND seq=? "
-                      "AND attempt=? AND state!='COMMITTED'",
-                      (attempt, dialog_id, seq, row["attempt"]))
-            return seq, attempt
+            c.execute("UPDATE ops SET state='SENT', attempt=?, owner=? WHERE dialog_id=? "
+                      "AND seq=? AND attempt=? AND state!='COMMITTED'",
+                      (attempt, self.incarnation, dialog_id, seq, row["attempt"]))
+            return seq, attempt, payload
 
     def _record(self, dialog_id: str, seq: int, attempt: int, res: OpResult) -> None:
         """Apply a response to the ledger. A success from any attempt may
@@ -514,15 +722,95 @@ class AgentA:
                              "WHERE dialog_id=? AND seq=?", (dialog_id, seq))
         return dict(rows[0]) if rows else None
 
+    # -- restart recovery (v0.2.2) ------------------------------------------
+    def recover_inflight(self) -> list[dict]:
+        """Run once when a restarted Agent A process opens its ledger, before
+        new work. Marks every SENT row written by another incarnation IN_DOUBT
+        (identity, payload, attempt and next_seq untouched) and returns them.
+        Sends nothing."""
+        with self.db.tx() as c:
+            rows = c.execute("SELECT dialog_id, seq, payload, attempt FROM ops WHERE "
+                             "state='SENT' AND (owner IS NULL OR owner != ?) "
+                             "ORDER BY dialog_id, seq", (self.incarnation,)).fetchall()
+            c.execute("UPDATE ops SET state='IN_DOUBT' WHERE state='SENT' "
+                      "AND (owner IS NULL OR owner != ?)", (self.incarnation,))
+        return [dict(r) for r in rows]
+
+    def unresolved_ops(self, dialog_id: str | None = None) -> list[dict]:
+        q = ("SELECT dialog_id, seq, payload, state, attempt FROM ops WHERE state IN "
+             f"({','.join('?' * len(UNRESOLVED_STATES))})")
+        args: tuple = UNRESOLVED_STATES
+        if dialog_id is not None:
+            q += " AND dialog_id=?"
+            args = (*args, dialog_id)
+        return [dict(r) for r in self.db.query(q + " ORDER BY dialog_id, seq", args)]
+
+    def reconcile_ops(self, gw: Gateway, dialog_id: str,
+                      states: tuple[str, ...] = UNRESOLVED_STATES) -> list[dict]:
+        """Learn the authoritative outcome of every unresolved operation of a
+        dialog from Agent B (gateway.resolve_op). Never submits an operation.
+        An outcome that cannot be established leaves the row as it is and is
+        reported as UNRESOLVED."""
+        self.recover_inflight()
+        q = (f"SELECT seq, payload, attempt FROM ops WHERE dialog_id=? AND state IN "
+             f"({','.join('?' * len(states))}) ORDER BY seq")
+        out = []
+        for r in self.db.query(q, (dialog_id, *states)):
+            res = gw.resolve_op(self.ctx, dialog_id, r["seq"], r["payload"], attempt=r["attempt"])
+            out.append(self._apply_resolution(dialog_id, r["seq"], r["attempt"], res))
+        return out
+
+    def _apply_resolution(self, dialog_id: str, seq: int, attempt: int, res: OpResult) -> dict:
+        """COMMITTED may be recorded from any attempt (B holds one result per
+        operation). NOT_EXECUTED / CONFLICT are recorded only if the row is
+        still unresolved at the attempt that was asked about, so a stale
+        answer cannot override a newer attempt. COMMITTED is never changed."""
+        if res.ok and res.status == "COMMITTED":
+            outcome, sql, args = "COMMITTED", (
+                "UPDATE ops SET state='COMMITTED', result=? WHERE dialog_id=? AND seq=? "
+                "AND state!='COMMITTED'"), (res.result, dialog_id, seq)
+        elif (res.ok and res.status == "NOT_EXECUTED") or res.code is Code.SEQUENCE_CONFLICT:
+            outcome = "NOT_EXECUTED" if res.ok else "CONFLICT"
+            sql = (f"UPDATE ops SET state=? WHERE dialog_id=? AND seq=? AND attempt=? AND state IN "
+                   f"({','.join('?' * len(UNRESOLVED_STATES))})")
+            args = (outcome, dialog_id, seq, attempt, *UNRESOLVED_STATES)
+        else:
+            return {"seq": seq, "outcome": "UNRESOLVED", "code": res.code.value,
+                    "status": res.status, "detail": res.detail, "applied": False}
+        with self.db.tx() as c:
+            applied = c.execute(sql, args).rowcount == 1
+            cur = c.execute("SELECT state, result FROM ops WHERE dialog_id=? AND seq=?",
+                            (dialog_id, seq)).fetchone()
+        return {"seq": seq, "outcome": outcome, "code": res.code.value, "status": res.status,
+                "result": res.result, "detail": res.detail, "applied": applied,
+                "ledger_state": cur["state"], "ledger_result": cur["result"]}
+
+    def retry_op(self, gw: Gateway, dialog_id: str, seq: int) -> OpResult:
+        """Explicit retry of an operation that reconciliation proved
+        NOT_EXECUTED: same dialog, seq and stored payload, a new attempt
+        number above the fenced ones. Refused in any other state."""
+        return self._dispatch(gw, dialog_id,
+                              self._reserve(dialog_id, None, seq, retry_not_executed=True))
+
     def unknown_ops(self, dialog_id: str) -> list[tuple[int, str]]:
         rows = self.db.query("SELECT seq, payload FROM ops WHERE dialog_id=? AND state='UNKNOWN'",
                              (dialog_id,))
         return [(r["seq"], r["payload"]) for r in rows]
 
     def settle_unknown_ops(self, gw: Gateway, dialog_id: str) -> list[OpResult]:
-        """After resumption, resend ops whose outcome was unknown using the
-        SAME sequence number; B deduplicates on (dialog, seq)."""
-        return [self.invoke(gw, dialog_id, p, seq=s) for s, p in self.unknown_ops(dialog_id)]
+        """After resumption:
+
+        1. (v0.2.2) operations left SENT by a dead Agent A process, or already
+           IN_DOUBT, are reconciled with Agent B (reconcile_ops); they are
+           never resent here, whatever the answer;
+        2. ops whose response was lost in this process (UNKNOWN) are resent
+           with the SAME sequence number and payload, as in v0.2.1; B
+           deduplicates on (dialog, seq, payload digest) and honours fences.
+        """
+        out = [OpResult(Code(r["code"]), r["outcome"], r.get("result"), r.get("detail", ""))
+               for r in self.reconcile_ops(gw, dialog_id, states=("IN_DOUBT",))]
+        return out + [self.invoke(gw, dialog_id, p, seq=s)
+                      for s, p in self.unknown_ops(dialog_id)]
 
     def resume(self, gw: Gateway, dialog_id: str) -> ResumeResult:
         r = self._row(dialog_id)

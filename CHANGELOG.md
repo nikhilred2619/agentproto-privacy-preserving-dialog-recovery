@@ -1,5 +1,108 @@
 # Changelog
 
+## 0.2.2 — 2026-10-12
+
+Agent A process-restart recovery. Scenario suggested by N. Templeman in the
+AgentProto discussion after he reviewed 0.2.1 (he has not reviewed 0.2.2):
+persist an operation as SENT, restart Agent A in a new OS
+process from its durable ledger before the acknowledgement is recorded, and
+let the original downstream execution finish late.
+
+### Fixed
+
+- **A SENT row left by a dead Agent A process was stranded or resent.** On
+  v0.2.1 nothing distinguished it from an in-flight row of the live process;
+  `settle_unknown_ops` only looked at UNKNOWN, so the row stayed SENT forever
+  (even after the original execution committed), and `invoke(seq=s, same
+  payload)` treated it as retryable and dispatched a new attempt. Reproduced
+  with real processes: 8 of 8 regression cases failed on v0.2.1
+  (`results/process_restart_before_fix.txt`).
+- Repair:
+  - Agent A rows carry `owner` (the writing process's incarnation id).
+    `recover_inflight()` marks SENT rows of other incarnations `IN_DOUBT`
+    without touching dialog id, seq, payload, attempt or `next_seq`.
+  - `IN_DOUBT` is never resent: `invoke` returns `OUTCOME_UNKNOWN` locally.
+  - `reconcile_ops()` asks Agent B through `Gateway.resolve_op` →
+    `AgentB.resolve`, bound to the payload digest: COMMITTED (with result),
+    NOT_EXECUTED, IN_PROGRESS or CONFLICT. It submits nothing. Anything short
+    of an authoritative answer leaves the row unresolved.
+  - B answers NOT_EXECUTED only after fencing every Agent A attempt up to the
+    one asked about (`op_fences`), and, for an attempt B had started, at the
+    tool (`ExternalTool.fence`). Agent A now sends its attempt number with
+    each invocation, so a late copy of a fenced attempt is refused.
+  - `retry_op()` is the only way to retry, only from NOT_EXECUTED, with the
+    original seq and payload and a higher attempt number.
+  - `settle_unknown_ops()` now reconciles IN_DOUBT rows (never resends them)
+    before resending UNKNOWN rows as before.
+  - Answers are applied with the same rules as v0.2.1: COMMITTED is never
+    overwritten; a NOT_EXECUTED/CONFLICT answer only applies to the attempt it
+    was asked about.
+
+### Added
+
+- `tests/restart_harness.py`: multi-process harness (downstream server
+  process, Agent A worker processes, event-based gates, read-only SQLite
+  inspection).
+- `tests/test_process_restart_regression.py` (8 cases, v0.2.1-compatible API).
+- `tests/test_process_restart.py` (66 cases): scenarios A-I across all six
+  modes, combined restart + gateway failover (5 modes), and the unsupported
+  `scoped-endpoint-noticket` failover variant, which is asserted to stay
+  unresolved.
+- `AgentA.recover_inflight`, `unresolved_ops`, `reconcile_ops`, `retry_op`;
+  `AgentB.resolve`; `Gateway.resolve_op`; A states `IN_DOUBT` and
+  `NOT_EXECUTED`; schema: `ops.owner` (A, migrated in place on open), table
+  `op_fences` (B).
+
+### Changed
+
+- `Gateway.invoke` and `AgentB.invoke` take an optional attempt number.
+  One existing test wrapper (`test_g_late_failure_cannot_overwrite_commit`
+  in `test_operation_ledger_integrity.py`) replaces `gateway.invoke` with a
+  four-argument function; its signature was extended to accept and forward
+  `attempt`. Its assertions are unchanged.
+
+### Unchanged
+
+- Experimental results: scenario matrix (152 cells), fault schedule (1,890
+  rows) and privacy outputs re-run on 0.2.2 and identical to the committed
+  files (`results/v0.2.2_rerun_check.txt`). Benchmark not re-run; it does not
+  call the changed code.
+- All 233 tests of 0.2.1 still pass.
+
+### Pre-publication technical audit corrections
+
+This project's own pre-publication technical audit of the first 0.2.2 draft
+found three issues. `tests/test_review_v022.py`
+(72 cases) failed 44 times on the draft and passes on the corrected code.
+
+- **`invoke(seq=...)` could retry a NOT_EXECUTED operation, bypassing
+  `retry_op()`, and `retry_op()`'s state check was not atomic** (two
+  concurrent retries both dispatched). `_reserve()` now refuses NOT_EXECUTED
+  except from `retry_op()`, which checks the state in the reserving
+  transaction. CONFLICT rows are no longer resent (B's payload mismatch is
+  permanent). UNKNOWN, NEEDS_RECONCILIATION, FAILED and SENT of the live
+  process are still resent; each is safe under B's deduplication and fences.
+  No case could execute twice before the fix.
+- **`AgentB.resolve` could fence or abort without authorization.** It now
+  rejects unauthenticated callers itself; reading an existing outcome needs
+  only authentication and principal binding; every write that aborts or
+  fences needs a current `invoke` grant and re-validates state before
+  writing. Revoked, expired or unavailable authorization leaves the caller
+  unresolved and writes nothing.
+- **Agent B restart was described as a process restart.** It is simulated in
+  the same process (new incarnation id). Harness comment, D2 test name and
+  docstring, and docs corrected; added as assumption M11.
+- Full suite: 379 passed on Python 3.11, 3.12 and 3.13. Experiment outputs
+  re-run and identical.
+
+### Scope
+
+Tested: real OS process restart of Agent A on one host, a downstream process that
+outlives Agent A, local Unix-socket IPC. Not tested or claimed: multi-host
+operation, real network protocols, cross-operator authentication, official
+AgentProto interoperability. The external tool's atomic fence (or honoured
+idempotency key) remains an explicit assumption (M7).
+
 ## 0.2.1 — 2026-10-11
 
 Focused patch: Agent A's local operation ledger.

@@ -187,9 +187,9 @@ def test_g_late_failure_cannot_overwrite_commit(make, mode):
     hold, reached = threading.Event(), threading.Event()
     n = {"calls": 0}
 
-    def delayed(ctx, up, seq, payload):
+    def delayed(ctx, up, seq, payload, attempt=None):  # v0.2.2: forwards attempt
         n["calls"] += 1
-        res = real(ctx, up, seq, payload)
+        res = real(ctx, up, seq, payload, attempt=attempt)
         if n["calls"] == 1:                      # the first attempt's reply is late
             reached.set()
             assert hold.wait(10)

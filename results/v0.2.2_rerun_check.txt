@@ -1,0 +1,39 @@
+# v0.2.2 re-run check, 2026-10-12T08:01:35Z
+Re-ran: agentproto-recovery scenarios, faults, privacy (default arguments) into a scratch directory and compared with the committed results:
+- scenario_matrix.csv: 152/152 cells identical (code, recovered, correct_association, explicit_failure, extra)
+- scenario_summary.json: identical
+- fault_schedule.csv: 1,890/1,890 rows identical
+- fault_summary.json: identical
+- privacy.json: identical
+Benchmark not re-run: benchmark_mode() never calls invoke() or resolve_op(), the code paths changed in v0.2.2.
+Committed result files were therefore left in place.
+
+Environment of the re-run:
+{
+  "agentproto_recovery": "0.2.2",
+  "args": {
+    "bench_dialogs": 400,
+    "command": "privacy",
+    "fault_dialogs": 90,
+    "out": "<local scratch directory, redacted>",
+    "privacy_dialogs": 50,
+    "repeats": 3,
+    "runs": 5,
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "threads": 4
+  },
+  "cpu_count": 2,
+  "cryptography": "50.0.1",
+  "machine": "x86_64",
+  "platform": "Linux-6.18.44-fc-v114-x86_64-with-glibc2.39",
+  "python": "3.13.16",
+  "sqlite": "3.45.1",
+  "timestamp_utc": "2026-10-12T08:00:55Z",
+  "wall_seconds": 2.71
+}
+# Re-run after the v0.2.2 review corrections, 2026-10-12T08:35:27Z
+Same three commands, same comparison: scenario_matrix.csv 152/152 cells identical; fault_schedule.csv 1,890/1,890 rows identical; scenario_summary.json, fault_summary.json, privacy.json identical. Benchmark still never calls invoke() or resolve_op(); not re-run.

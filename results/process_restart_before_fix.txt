@@ -1,0 +1,70 @@
+# tests/test_process_restart_regression.py against UNMODIFIED baseline v0.2.1
+# commit a940acea0f3e3394e72e4e262e21fe912d40d4d3; src diff vs HEAD: none
+# 2026-10-12T07:44:59Z; python 3.13.16
+# command: python -m pytest tests/test_process_restart_regression.py -v -rf
+tests/test_process_restart_regression.py::test_restarted_agent_does_not_resend_an_in_doubt_operation[global-store] FAILED [ 12%]
+tests/test_process_restart_regression.py::test_restarted_agent_does_not_resend_an_in_doubt_operation[scoped-store] FAILED [ 25%]
+tests/test_process_restart_regression.py::test_restarted_agent_does_not_resend_an_in_doubt_operation[scoped-endpoint-ticket] FAILED [ 37%]
+tests/test_process_restart_regression.py::test_restarted_agent_does_not_resend_an_in_doubt_operation[scoped-endpoint-medticket] FAILED [ 50%]
+tests/test_process_restart_regression.py::test_restarted_agent_reaches_authoritative_outcome[global-store] FAILED [ 62%]
+tests/test_process_restart_regression.py::test_restarted_agent_reaches_authoritative_outcome[scoped-store] FAILED [ 75%]
+tests/test_process_restart_regression.py::test_restarted_agent_reaches_authoritative_outcome[scoped-endpoint-ticket] FAILED [ 87%]
+tests/test_process_restart_regression.py::test_restarted_agent_reaches_authoritative_outcome[scoped-endpoint-medticket] FAILED [100%]
+E       AssertionError: SENT row was treated as permission to resend
+E       assert [{'pid': 341,...d': 'invoke'}] == []
+E         - []
+E         + [
+E         +     {...
+tests/test_process_restart_regression.py:59: AssertionError
+E       AssertionError: SENT row was treated as permission to resend
+E       assert [{'pid': 352,...d': 'invoke'}] == []
+E         - []
+E         + [
+E         +     {...
+tests/test_process_restart_regression.py:59: AssertionError
+E       AssertionError: SENT row was treated as permission to resend
+E       assert [{'pid': 363,...d': 'invoke'}] == []
+E         - []
+E         + [
+E         +     {...
+tests/test_process_restart_regression.py:59: AssertionError
+E       AssertionError: SENT row was treated as permission to resend
+E       assert [{'pid': 374,...d': 'invoke'}] == []
+E         - []
+E         + [
+E         +     {...
+tests/test_process_restart_regression.py:59: AssertionError
+        assert row["state"] not in ("COMMITTED", "FAILED", "NOT_EXECUTED")
+E       AssertionError: restarted ledger left the operation SENT
+E       assert 'SENT' == 'COMMITTED'
+E         - COMMITTED
+E         + SENT
+tests/test_process_restart_regression.py:85: AssertionError
+        assert row["state"] not in ("COMMITTED", "FAILED", "NOT_EXECUTED")
+E       AssertionError: restarted ledger left the operation SENT
+E       assert 'SENT' == 'COMMITTED'
+E         - COMMITTED
+E         + SENT
+tests/test_process_restart_regression.py:85: AssertionError
+        assert row["state"] not in ("COMMITTED", "FAILED", "NOT_EXECUTED")
+E       AssertionError: restarted ledger left the operation SENT
+E       assert 'SENT' == 'COMMITTED'
+E         - COMMITTED
+E         + SENT
+tests/test_process_restart_regression.py:85: AssertionError
+        assert row["state"] not in ("COMMITTED", "FAILED", "NOT_EXECUTED")
+E       AssertionError: restarted ledger left the operation SENT
+E       assert 'SENT' == 'COMMITTED'
+E         - COMMITTED
+E         + SENT
+tests/test_process_restart_regression.py:85: AssertionError
+FAILED tests/test_process_restart_regression.py::test_restarted_agent_does_not_resend_an_in_doubt_operation[global-store]
+FAILED tests/test_process_restart_regression.py::test_restarted_agent_does_not_resend_an_in_doubt_operation[scoped-store]
+FAILED tests/test_process_restart_regression.py::test_restarted_agent_does_not_resend_an_in_doubt_operation[scoped-endpoint-ticket]
+FAILED tests/test_process_restart_regression.py::test_restarted_agent_does_not_resend_an_in_doubt_operation[scoped-endpoint-medticket]
+FAILED tests/test_process_restart_regression.py::test_restarted_agent_reaches_authoritative_outcome[global-store]
+FAILED tests/test_process_restart_regression.py::test_restarted_agent_reaches_authoritative_outcome[scoped-store]
+FAILED tests/test_process_restart_regression.py::test_restarted_agent_reaches_authoritative_outcome[scoped-endpoint-ticket]
+FAILED tests/test_process_restart_regression.py::test_restarted_agent_reaches_authoritative_outcome[scoped-endpoint-medticket]
+============================== 8 failed in 3.79s ===============================
+exit=1
