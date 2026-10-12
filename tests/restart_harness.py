@@ -178,7 +178,9 @@ def serve(workdir: str, mode: str, address: str) -> None:
         raise ValueError(op)
 
     stop = threading.Event()
-    listener = Listener(address, family="AF_UNIX", authkey=_authkey())
+    # Permit a bounded burst of simultaneous control/agent IPC clients after restart.
+    # Listener defaults to backlog=1; increase queue depth for concurrent arrivals.
+    listener = Listener(address, family="AF_UNIX", authkey=_authkey(), backlog=16)
 
     def handle(conn: Any) -> None:
         try:

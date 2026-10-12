@@ -2,6 +2,21 @@
 
 ## 0.2.2 — 2026-10-12
 
+### Post-publication independent reproduction follow-up
+
+- Lars independently reproduced the v0.2.2 experiment at commit
+  `278fbf573522b6a45366c9e7f33a0235f4f715b8` (379 tests passed;
+  96 of 97 reported values matched). The mismatch was a methodology prose
+  count left from v0.1.0: corrected the negative-control fault count from
+  23 to 13, consistent with the committed results.
+- Clarified that `scoped-endpoint-noticket` refusing all 270 attempts
+  (`MAPPING_NOT_FOUND`) is fail-closed behavior, not proof that individual
+  injected faults were detected.
+- Raised the *test-only* Unix-socket Listener backlog from 1 to 16 after
+  the independent reviewer reported an intermittent macOS connection refusal.
+  The 74 process-restart tests pass on Linux with this change; repeat
+  verification on macOS is still needed. No production logic was changed.
+
 Agent A process-restart recovery. Scenario suggested by N. Templeman in the
 AgentProto discussion after he reviewed 0.2.1 (he has not reviewed 0.2.2):
 persist an operation as SENT, restart Agent A in a new OS

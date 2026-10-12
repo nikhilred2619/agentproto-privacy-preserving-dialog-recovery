@@ -24,7 +24,7 @@ equivalent except where the configuration removes recovery information.
 Agent A dialog. After every successful resumption the harness compares the
 dialog B actually resumed (`AgentB.oracle_resumed`) with that record.
 A mismatch is an *incorrect association*. The negative control shows the
-oracle detects errors (T06: `OK ✗WRONG`; fault schedule: 23).
+oracle detects errors (T06: `OK ✗WRONG`; fault schedule: 13 in v0.2.2).
 
 Oracle data is instrumentation. No component reads it.
 

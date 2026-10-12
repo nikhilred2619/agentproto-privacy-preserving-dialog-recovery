@@ -312,6 +312,10 @@ comparable line by line.
 | scoped-endpoint-medticket | 67 | 203 | 0 | 0 | 0.593 |
 | scoped-store + unsafe guess | 78 | 192 | **13** | **13** | 0.690 |
 
+In `scoped-endpoint-noticket`, all 270 fault-schedule attempts return
+`MAPPING_NOT_FOUND`. The zero security-violation count records fail-closed
+refusal, **not** demonstrated fault detection or successful recovery.
+
 `foreign_ticket` (24 attempts per mode): store and global-endpoint modes 24 OK
 (ticket ignored, correct dialog); ticket modes 21 `TICKET_MISMATCH` and 3
 `MAPPING_NOT_FOUND` (that user had no other dialog, so no ticket was
