@@ -196,10 +196,11 @@ row, plus fencing at the tool for reconciliation (T14, T14b, T22, T23).
   retry of a `NOT_EXECUTED` op starts attempt + 1 under a new key.
 * SQLite runs in WAL mode with `synchronous=FULL`.
 
-## Agent A operation ledger (v0.2.1)
+## Agent A operation ledger (v0.2.1, restart states added in v0.2.2)
 
 Agent A keeps one row per `(dialog, seq)` in its own database: payload,
-state, result, attempt. The payload is written once and never changed.
+state, result, attempt and (v0.2.2) owner, the incarnation id of the Agent A
+process that last sent it. The payload is written once and never changed.
 
 ```mermaid
 stateDiagram-v2
@@ -211,8 +212,14 @@ stateDiagram-v2
     SENT --> FAILED: other rejection (current attempt)
     UNKNOWN --> SENT: retry, same payload, attempt+1
     NEEDS_RECONCILIATION --> SENT: retry, same payload, attempt+1
-    CONFLICT --> SENT: retry, same payload, attempt+1
     FAILED --> SENT: retry, same payload, attempt+1
+    CONFLICT --> CONFLICT: never resent (B holds another payload)
+    SENT --> IN_DOUBT: recover_inflight (owner is another, dead, process)
+    IN_DOUBT --> IN_DOUBT: invoke/retry refused locally; B unreachable or still executing
+    IN_DOUBT --> COMMITTED: reconcile, B says COMMITTED
+    IN_DOUBT --> NOT_EXECUTED: reconcile, B says NOT_EXECUTED (attempts fenced)
+    IN_DOUBT --> CONFLICT: reconcile, B holds another payload
+    NOT_EXECUTED --> SENT: retry_op only (atomic state check), same seq and payload, attempt+1
     COMMITTED --> COMMITTED: any later request or response
 ```
 
@@ -227,6 +234,72 @@ Rules, each enforced inside a SQLite transaction:
 * No update matches a COMMITTED row.
 * An explicit seq with no local row is adopted: inserted with its payload,
   and `next_seq` moves past it.
+
+### Restart recovery (v0.2.2)
+
+```mermaid
+sequenceDiagram
+    participant P1 as Agent A (process P1)
+    participant L as A's SQLite ledger
+    participant G as Gateway
+    participant B as Agent B
+    participant T as External tool
+    P1->>L: SENT(dialog, seq 1, "pay-10", attempt 1, owner=P1)
+    P1->>G: invoke(seq 1, attempt 1)
+    G->>B: invoke
+    B->>B: PENDING (lease, incarnation)
+    B->>T: execute (still running)
+    Note over P1: SIGKILL before the ack is recorded
+    participant P2 as Agent A (process P2)
+    P2->>L: recover_inflight: SENT owned by P1 -> IN_DOUBT
+    P2->>G: resolve_op(seq 1, "pay-10", attempt 1)
+    G->>B: resolve
+    B-->>P2: IN_PROGRESS (live lease) -> row stays IN_DOUBT
+    T-->>B: done; B: COMMITTED (reply to P1 is lost)
+    P2->>G: resolve_op(...)
+    B-->>P2: COMMITTED + result -> row COMMITTED
+```
+
+If B has no record (the request never arrived), `resolve` inserts a
+NOT_EXECUTED row and fences attempts up to the one asked about. If B's record
+is PENDING from a previous B incarnation or with an expired lease, `resolve`
+calls B's reconciliation, which fences the attempt's key at the tool. Either
+way a late copy of the request is refused afterwards (`OPERATION_ABORTED`),
+unless the operation already COMMITTED, in which case B answers it from its
+ledger as a duplicate. Agent A retries only through `retry_op`, only from
+NOT_EXECUTED, with the original seq and payload and a higher attempt number;
+`invoke(seq=...)` refuses a NOT_EXECUTED row, and `retry_op` checks the state
+in the same transaction that reserves the new attempt, so two concurrent
+retries cannot both dispatch. `resume()` never touches operations.
+
+Resend policy of `invoke(seq=...)` for an existing row with the same payload:
+
+| Local state | Resent? | Why |
+|---|---|---|
+| COMMITTED | no, answered from the ledger | immutable result |
+| IN_DOUBT, or SENT of a dead process | no | outcome unknown after restart; reconcile first |
+| NOT_EXECUTED | only via `retry_op()` | the documented explicit retry |
+| CONFLICT | no | B holds a different payload for this seq; permanent |
+| UNKNOWN | yes | transport failure seen by this process; B deduplicates on (dialog, seq, digest) and refuses fenced attempts |
+| NEEDS_RECONCILIATION | yes | B answers from its ledger, refuses, or (only if B has since established NOT_EXECUTED) executes once |
+| FAILED | yes | recorded only for rejections before B writes or executes anything |
+| SENT of this process | yes | concurrent in-process retry; B deduplicates |
+
+Authorization policy for `resolve` (v0.2.2 pre-publication technical audit). Every call needs an
+authenticated caller whose principal and tenant match the dialog; a dialog
+reference alone is never enough. Reading an outcome that already exists
+(COMMITTED, CONFLICT, IN_PROGRESS, or NOT_EXECUTED already fenced through the
+attempt asked about) needs nothing more: learning what happened to one's own
+operation is not a new action, and refusing it would leave the caller unable
+to settle its ledger. Anything that aborts an attempt (recording NOT_EXECUTED
+for an operation B never saw, raising a fence, fencing a started attempt at
+the tool) needs a current `invoke` grant, checked when the abort is about to
+happen. If authorization is revoked, expired or unavailable, nothing is
+written and the caller stays unresolved; an attempt that B had started may
+then still complete, once. `resolve` is allowed in any dialog state.
+
+Assumptions: one live Agent A process per ledger (M9) and a fenceable tool
+(M7), both in `docs/threat_model.md`.
 
 The client ledger exists because Agent B's deduplication cannot prevent a
 client that has lost track of a committed operation from issuing it again
@@ -245,6 +318,7 @@ committed result matters".
 | I6 Never repeat a side effect because a response was lost | `(dialog, seq)` dedup with payload digest, write-ahead `PENDING` with lease and incarnation, reconciliation by fencing at the tool | T14, T14b, T22, T23, `test_reconcile_when_tool_never_ran` | Demonstrated in-process. **v0.1.0 violated it** when reconciliation raced a live call. Depends on the tool offering an atomic fence (or honouring idempotency keys); a tool without that cannot be reconciled safely by software |
 | I8 One seq names one operation | payload digest stored with the op at B; local payload check at A before dispatch | T23, `test_operation_ledger_integrity.py` | Demonstrated; v0.1.0 silently deduplicated a different payload at B |
 | I9 A committed operation stays committed with its payload and result | `_reserve` / `_record` transactions; no update matches COMMITTED; non-success applies only to the current attempt | `test_operation_ledger_integrity.py` Tests A, E, F, G | Demonstrated in-process with threads. **v0.2.0 violated it** (conflicting retry and late errors overwrote COMMITTED) |
+| I10 An operation left in flight by a dead Agent A process is never resent on restart, stays explicitly unresolved until B answers authoritatively, and executes at most once | owner/incarnation on SENT, `IN_DOUBT`, `resolve` bound to the payload digest, attempt fences at B and at the tool | `test_process_restart_regression.py`, `test_process_restart.py` (A-I, real OS processes) | Demonstrated with separate processes on one host. **v0.2.1 violated it** (resend on retry; SENT never resolved). Relies on M7 and M9 |
 | I7 One epoch transition per resumption, even under races | CAS at B, lease + CAS at gateway | T16, T18, 8-way race test | Demonstrated with threads in one process; not tested across processes or hosts |
 
 Unproven: behaviour under real network partitions, clock skew between

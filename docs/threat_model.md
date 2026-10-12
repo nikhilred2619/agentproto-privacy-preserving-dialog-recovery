@@ -52,6 +52,20 @@ in a deployment.
 * **M8 Execution lease.** The lease (30 s) is an estimate of how long a tool
   call can take. Too short a lease aborts slow calls (they are fenced, never
   duplicated); it does not break safety, because of M7.
+* **M9 One live Agent A process per ledger.** Restart recovery treats a SENT
+  row stamped by another incarnation as orphaned. Nothing enforces this; the
+  prototype's tests wait for the old process to exit (SIGKILL + wait) before
+  starting the new one. Two live processes on one ledger would mark each
+  other's in-flight rows IN_DOUBT (no duplicate execution, but spurious
+  unresolved rows).
+* **M11 Agent B restarts are simulated.** `AgentB.restart()` (and the
+  harness's `restart_b`) gives the same object, in the same OS process, a new
+  incarnation id; threads of the old incarnation keep running. This models an
+  executor that outlives a B restart. Only Agent A restarts are tested as
+  real OS-process restarts.
+* **M10 Agent B's ledger is authoritative and durable.** "No record at B"
+  is taken to mean "never reached B". If B loses its database, resolve would
+  wrongly answer NOT_EXECUTED for an operation that executed.
 * **M6 One clock.** Leases and grant expiry use a single `ManualClock`. Clock
   skew between gateways is not modelled.
 
@@ -69,7 +83,11 @@ in a deployment.
 | Ticket substitution (authentic ticket of another dialog, same principal) | Ticket bound to the upstream dialog: dA inside mediator tickets; `upstream_binding(dA)` inside B tickets, checked by B against the value the gateway derives from the presented dA | T21, fault `foreign_ticket` | **Present in v0.1.0** (wrong dialog resumed and wrong mapping persisted). A compromised gateway can still mis-route, because it chooses which dA to derive the binding from |
 | Reconciliation racing a live tool call | Lease + incarnation; fencing at the tool | T22, `test_late_tool_call_after_reconcile_is_fenced_not_duplicated` | **Present in v0.1.0** (duplicate execution). Relies on M7 |
 | Sequence number reused for a different operation | Payload digest per `(dialog, seq)` at B; since v0.2.1 also a local payload check at A before dispatch | T23, `test_operation_ledger_integrity.py` | **Present in v0.1.0** (silently deduplicated) |
-| Client ledger corruption by rejected, late or concurrent responses | Attempt-numbered transactional updates; COMMITTED never matched by an update | `test_operation_ledger_integrity.py` (Tests A, E, F, G) | **Present in v0.2.0** (COMMITTED overwritten with FAILED/UNKNOWN and NULL result). Agent A crash between dispatch and recording leaves a SENT row that `settle_unknown_ops` does not pick up (see Limitations) |
+| Client ledger corruption by rejected, late or concurrent responses | Attempt-numbered transactional updates; COMMITTED never matched by an update | `test_operation_ledger_integrity.py` (Tests A, E, F, G) | **Present in v0.2.0** (COMMITTED overwritten with FAILED/UNKNOWN and NULL result) |
+| Agent A process dies between dispatch and recording the ack | SENT rows carry the writer's incarnation; restart marks them IN_DOUBT; no resend; outcome from `AgentB.resolve`; NOT_EXECUTED only after fencing; explicit `retry_op` with a higher attempt | `test_process_restart_regression.py`, `test_process_restart.py` | **Present in v0.2.1** (row stranded as SENT; resent on retry). Relies on M7, M9, M10. An operation stays unresolved for as long as no gateway with the mapping can reach B |
+| Abort/fence of an operation by a caller without current authority | `AgentB.resolve`: authenticated caller and principal binding always; a current `invoke` grant for any write (NOT_EXECUTED for an unseen operation, raising a fence, fencing at the tool); re-validates state before writing; reading an existing outcome needs no grant | `test_review_v022.py` 2a-2g | **Present in the first v0.2.2 draft** (resolve fenced without any authorization check; B did not check `authenticated`). Gateway checks authentication and principal binding only; B decides authorization. Deliberate: outcome discovery stays available to the bound principal when its grant is revoked, expired or unavailable |
+| Local resend of a reconciled or conflicting operation | `_reserve`: NOT_EXECUTED only via `retry_op` (state checked in the reserving transaction); CONFLICT never resent | `test_review_v022.py` 1a-1c | **Present in the first v0.2.2 draft** (bypass of `retry_op`; non-atomic `retry_op` check let two concurrent retries dispatch; CONFLICT resent). None of these could execute twice, because B deduplicates; they violated the documented rule and caused needless dispatches |
+| Late copy of a request whose attempt was declared NOT_EXECUTED | Per-operation attempt fence at B (`op_fences`); tool-level fence for attempts B had started | `test_process_restart.py` D, D2, G | A request without an attempt number (pre-v0.2.2 client) is refused once a fence exists |
 | Compromised gateway guesses dialogs | Not mitigable by the gateway itself; B rejects principal/tenant/epoch mismatches | Negative control (T06 `+UNSAFE_GUESS`, fault schedule: 13 incorrect associations in v0.2.0) | A compromised gateway that guesses *within the same principal* and with a correct epoch can mis-associate. B cannot tell. See gap analysis |
 | Identifier leakage in logs | Per-domain keyed redaction (`Redactor`) | `test_logs_contain_no_raw_identifiers`, `test_redaction_is_domain_keyed` | Only the prototype's own events are checked |
 | Metadata linkability | Scoped identifiers; rotating tickets; ticket binding derived from dA so B does not learn dA | T17 (`privacy.json`), binding checks in `test_privacy.py` | Gateways always link both sides; event order links A and B in 100% of sequential dialogs in every mode; B-sealed tickets are a shared A-B value; operators of G1 and G2 can join on dA/dB/tickets |
